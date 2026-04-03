@@ -229,26 +229,48 @@ flowchart LR
 
 ### 4.1 重写难度热力图
 
+> 纵轴为重写难度，横轴为代码量，颜色按所属阶段区分
+
 ```mermaid
-quadrantChart
-    title 重写难度 vs 代码量
-    x-axis 低代码量 --> 高代码量
-    y-axis 低难度 --> 高难度
-    quadrant-1 "高难度+高代码量"
-    quadrant-2 "高难度+低代码量"
-    quadrant-3 "低难度+低代码量"
-    quadrant-4 "低难度+高代码量"
-    S01-AgentLoop: [0.15, 0.10]
-    S02-ToolUse: [0.35, 0.35]
-    S03-Sessions: [0.65, 0.45]
-    S04-Channels: [0.60, 0.55]
-    S05-Gateway: [0.50, 0.65]
-    S06-Intelligence: [0.70, 0.50]
-    S07-Heartbeat: [0.45, 0.40]
-    S08-Delivery: [0.60, 0.30]
-    S09-Resilience: [0.80, 0.45]
-    S10-Concurrency: [0.65, 0.55]
+flowchart TB
+    subgraph HIGH["难度: 高"]
+        direction LR
+        S05["S05 Gateway<br/>626 行"]
+        S04["S04 Channels<br/>792 行"]
+        S10["S10 Concurrency<br/>903 行"]
+    end
+
+    subgraph MID["难度: 中"]
+        direction LR
+        S02["S02 ToolUse<br/>439 行"]
+        S07["S07 Heartbeat<br/>659 行"]
+        S03["S03 Sessions<br/>873 行"]
+        S06["S06 Intelligence<br/>905 行"]
+        S09["S09 Resilience<br/>1133 行"]
+    end
+
+    subgraph LOW["难度: 低"]
+        direction LR
+        S01["S01 AgentLoop<br/>172 行"]
+        S08["S08 Delivery<br/>869 行"]
+    end
+
+    style S01 fill:#c8e6c9,stroke:#388e3c
+    style S02 fill:#c8e6c9,stroke:#388e3c
+    style S03 fill:#bbdefb,stroke:#1976d2
+    style S04 fill:#bbdefb,stroke:#1976d2
+    style S05 fill:#bbdefb,stroke:#1976d2
+    style S06 fill:#ffe0b2,stroke:#f57c00
+    style S07 fill:#f8bbd0,stroke:#d32f2f
+    style S08 fill:#f8bbd0,stroke:#d32f2f
+    style S09 fill:#e1bee7,stroke:#7b1fa2
+    style S10 fill:#e1bee7,stroke:#7b1fa2
+    style HIGH fill:#fff0f0,stroke:#e57373
+    style MID fill:#fffde7,stroke:#ffd54f
+    style LOW fill:#e8f5e9,stroke:#81c784
 ```
+
+> **颜色说明**: 🟩 Phase 1 基础 | 🟦 Phase 2 连接 | 🟧 Phase 3 大脑 | 🟥 Phase 4 自主 | 🟪 Phase 5 生产
 
 ### 4.2 逐模块分析
 
