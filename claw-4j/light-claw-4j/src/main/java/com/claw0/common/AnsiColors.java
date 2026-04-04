@@ -13,6 +13,7 @@ public final class AnsiColors {
     public static final String YELLOW = "\033[33m";
     public static final String RED    = "\033[31m";
     public static final String BLUE   = "\033[34m";
+    public static final String MAGENTA = "\033[35m";
 
     private AnsiColors() {}
 
