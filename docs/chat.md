@@ -16,5 +16,5 @@ git submodule add https://github.com/shareAI-lab/claw0 vendors/claw0
 
 根据 @specs/claw0-java-rewrite-analysis.md 文档，选定轻量级重写方案，撰写一份详细的实施计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下
 
-根据 @specs/claw0-java-rewrite-analysis.md 文档，java版本选为21，选定springboot企业级重写方案，撰写一份详细的实施计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下
+仔细阅读 @vendors/claw0 项目代码和 @Specs/learn-claw0-arch.md 文档，然后根据 @specs/claw0-java-rewrite-analysis.md 文档，java版本选为21，为springboot企业级重写方案撰写一份详细的实施计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下。如果你有任何不明确的地方，向我提问。
 
