@@ -1,33 +1,39 @@
 package com.claw0.sessions;
 
 /**
- * Section 02: Tool Use
+ * Section 02: Tool Use —— 给模型装上手
  * "Give the model hands"
+ * 给模型装上手
  *
- * The Agent loop itself doesn't change -- we just add a dispatch table.
- * When stop_reason == "tool_use", look up the handler in TOOL_HANDLERS,
- * execute it, stuff the result back, and continue the loop. That simple.
+ * <p>Agent 循环本身不变 -- 只是增加了一个工具分发表.
+ * 当 stop_reason == "tool_use" 时, 在 TOOL_HANDLERS 中查找处理函数,
+ * 执行工具, 将结果塞回消息历史, 继续循环. 就这么简单.
  *
- * Architecture:
+ * <h2>架构总览</h2>
+ * <pre>
+ *   用户输入 --> LLM API --> stop_reason == "tool_use"?
+ *                                |
+ *                        TOOL_HANDLERS[name](input)
+ *                                |
+ *                        tool_result --> 送回 LLM
+ *                                |
+ *                         stop_reason == "end_turn"?
+ *                                |
+ *                             打印回复
+ * </pre>
  *
- *   User --> LLM --> stop_reason == "tool_use"?
- *                        |
- *                TOOL_HANDLERS[name](**input)
- *                        |
- *                tool_result --> back to LLM
- *                        |
- *                 stop_reason == "end_turn"?
- *                        |
- *                     Print
+ * <h2>工具列表</h2>
+ * <ul>
+ *   <li><b>bash</b>: 执行 shell 命令</li>
+ *   <li><b>read_file</b>: 读取文件内容</li>
+ *   <li><b>write_file</b>: 写入文件</li>
+ *   <li><b>edit_file</b>: 精确字符串替换 (与 Claude Code 的 edit 行为一致)</li>
+ * </ul>
  *
- * Tools:
- *   - bash       : run shell commands
- *   - read_file  : read file contents
- *   - write_file : write to files
- *   - edit_file  : exact string replacement (like OpenClaw's edit tool)
- *
- * Usage:
+ * <h2>运行方式</h2>
+ * <pre>
  *   mvn compile exec:java -Dexec.mainClass="com.claw0.sessions.S02ToolUse"
+ * </pre>
  */
 
 // region Common Imports
@@ -70,16 +76,24 @@ import java.util.stream.Collectors;
 public class S02ToolUse {
 
     // region Configuration
+    /** 模型 ID, 可通过环境变量 MODEL_ID 覆盖 */
     static final String MODEL_ID = Config.get("MODEL_ID", "claude-sonnet-4-20250514");
+    /**
+     * 系统提示词: 告诉模型如何使用工具.
+     * 关键指令: "先读后写" (Always read before edit), "精确匹配" (EXACT match)
+     */
     static final String SYSTEM_PROMPT =
             "You are a helpful AI assistant with access to tools.\n"
             + "Use the tools to help the user with file operations and shell commands.\n"
             + "Always read a file before editing it.\n"
             + "When using edit_file, the old_string must match EXACTLY (including whitespace).";
 
+    /** 工具输出最大字符数 -- 超出则截断, 防止单次工具输出撑爆上下文窗口 */
     static final int MAX_TOOL_OUTPUT = 50_000;
+    /** 工作目录: 所有文件操作都限制在此目录下 (安全沙箱) */
     static final Path WORKDIR = Path.of(System.getProperty("user.dir"));
 
+    /** Anthropic API 客户端, 自动从环境变量读取 ANTHROPIC_API_KEY */
     static final AnthropicClient client = AnthropicOkHttpClient.builder()
             .fromEnv()
             .build();
@@ -119,10 +133,21 @@ public class S02ToolUse {
     // Tool Implementations
     // ================================================================
 
+    /** 危险命令黑名单 -- 这是教学级安全检查, 生产环境应使用容器沙箱 (如 Docker) */
     static final List<String> DANGEROUS_COMMANDS = List.of(
             "rm -rf /", "mkfs", "> /dev/sd", "dd if="
     );
 
+    /**
+     * 执行 shell 命令并返回输出. 包含超时控制和危险命令过滤.
+     *
+     * <p>关键设计决策:
+     * <ul>
+     *   <li>redirectErrorStream(true) 合并 stderr 到 stdout, 避免分别读取时的死锁</li>
+     *   <li>异步读取进程输出, 避免 waitFor() 和 readAllBytes() 互相阻塞</li>
+     *   <li>超时后 destroyForcibly() 发送 SIGKILL 强制终止</li>
+     * </ul>
+     */
     @SuppressWarnings("unchecked")
     static String toolBash(Map<String, Object> input) {
         String command = (String) input.get("command");
@@ -138,12 +163,15 @@ public class S02ToolUse {
 
         AnsiColors.printTool("bash", command);
         try {
+            // redirectErrorStream(true) 将 stderr 合并到 stdout, 避免分别读取时的死锁问题
+            // 原因: 如果 stderr 和 stdout 分开缓冲, 一方满了会阻塞, 而另一方也在等读取
             ProcessBuilder pb = new ProcessBuilder("sh", "-c", command)
                     .directory(WORKDIR.toFile())
                     .redirectErrorStream(true);
             Process process = pb.start();
 
-            // Read output asynchronously to avoid deadlock
+            // 异步读取进程输出 -- 避免 waitFor() 和 readAllBytes() 之间的死锁:
+            // 如果进程输出缓冲区满了, 它会阻塞等待读取, 而 waitFor 又在等进程结束
             CompletableFuture<String> outputFuture = CompletableFuture.supplyAsync(() -> {
                 try {
                     return new String(process.getInputStream().readAllBytes());
@@ -155,6 +183,7 @@ public class S02ToolUse {
             boolean finished = process.waitFor(timeout, TimeUnit.SECONDS);
             String output = outputFuture.get();
 
+            // 超时后强制终止进程: destroyForcibly() 发送 SIGKILL (不可捕获, 进程立即终止)
             if (!finished) {
                 process.destroyForcibly();
                 return "Error: Command timed out after " + timeout + "s";
@@ -204,6 +233,13 @@ public class S02ToolUse {
         }
     }
 
+    /**
+     * 精确字符串替换工具. 要求 old_string 在文件中唯一匹配 (与 Claude Code 的 edit 行为一致).
+     *
+     * <p>设计理念: 为什么要求"唯一匹配"而不是"全部替换"?
+     * 因为 AI 生成替换时, 全部替换容易误伤相似代码. 唯一匹配更安全.
+     * 如果不唯一, 模型需要提供更多上下文来精确定位目标位置.
+     */
     static String toolEditFile(Map<String, Object> input) {
         String filePath = (String) input.get("file_path");
         String oldString = (String) input.get("old_string");
@@ -214,6 +250,7 @@ public class S02ToolUse {
             if (!Files.exists(target)) return "Error: File not found: " + filePath;
 
             String content = Files.readString(target);
+            // 统计匹配次数: 0次=找不到, 1次=替换, >1次=不唯一拒绝执行
             int count = countOccurrences(content, oldString);
 
             if (count == 0) {
@@ -236,7 +273,7 @@ public class S02ToolUse {
         }
     }
 
-    /** Count non-overlapping occurrences of a substring. */
+    /** 统计子字符串在文本中出现的非重叠次数. 用于确保 old_string 唯一匹配. */
     static int countOccurrences(String text, String sub) {
         int count = 0;
         int idx = 0;
@@ -251,6 +288,13 @@ public class S02ToolUse {
     // Tool Schema Definitions
     // ================================================================
 
+    /**
+     * 构建 SDK 的 Tool 对象.
+     * 将自定义的 properties Map 转为 SDK 要求的 JsonValue 格式,
+     * 因为 Anthropic SDK 的 InputSchema API 设计较为复杂 --
+     * 它要求用 putAdditionalProperty + JsonValue.from() 来定义每个参数,
+     * 而不是直接传 JSON 字符串.
+     */
     static Tool buildTool(String name, String description,
                           Map<String, Map<String, String>> properties,
                           List<String> required) {
@@ -306,6 +350,7 @@ public class S02ToolUse {
     // Tool Dispatch Table
     // ================================================================
 
+    // 工具分发表: 工具名 -> 处理函数. 使用 LinkedHashMap 保持注册顺序
     static final Map<String, Function<Map<String, Object>, String>> TOOL_HANDLERS = new LinkedHashMap<>();
     static {
         TOOL_HANDLERS.put("bash", S02ToolUse::toolBash);
@@ -332,15 +377,16 @@ public class S02ToolUse {
     // ================================================================
 
     /**
-     * Main agent loop -- REPL with tool dispatch.
+     * 带 Tool 分发的 Agent 循环 -- 在 S01 基础上增加了工具调用能力.
      *
-     * Differences from S01:
-     *   1. API call includes tools=TOOLS
-     *   2. stop_reason == "tool_use" triggers tool execution and result loop-back
-     *   3. Inner while loop handles consecutive tool calls
+     * <p>与 S01 的关键区别:
+     * <ol>
+     *   <li>API 调用新增 tools=TOOLS 参数, 告诉模型可以使用哪些工具</li>
+     *   <li>stop_reason == "tool_use" 时, 触发工具执行并将结果送回模型</li>
+     *   <li>内层 while 循环处理连续的工具调用 (模型可能一次请求多个工具, 全部执行后再送回)</li>
+     * </ol>
      *
-     * The loop structure itself is unchanged. The essence of an agent:
-     *   a while loop + a dispatch table.
+     * <p>循环结构本身不变 -- Agent 的本质就是: while 循环 + 分发表.
      */
     static void agentLoop() {
         List<MessageParam> messages = new ArrayList<>();
@@ -372,13 +418,16 @@ public class S02ToolUse {
                 break;
             }
 
-            // --- Step 2: Append user message ---
+            // --- Step 2: 将用户消息追加到历史列表 ---
+            // API 要求严格的 user/assistant 角色交替, 所以必须按顺序追加
             messages.add(MessageParam.builder()
                     .role(MessageParam.Role.USER)
                     .content(userInput)
                     .build());
 
-            // --- Step 3: Agent inner loop ---
+            // --- Step 3: agent 内循环 ---
+            // 处理连续的工具调用: 模型可能一次返回多个工具调用, 全部执行后再把结果送回模型.
+            // 这个内循环是 S02 相对于 S01 的核心新增部分.
             while (true) {
                 Message response;
                 try {
@@ -393,7 +442,8 @@ public class S02ToolUse {
                 } catch (Exception e) {
                     System.out.println("\n" + AnsiColors.YELLOW
                             + "API Error: " + e.getMessage() + AnsiColors.RESET + "\n");
-                    // Roll back to the last user message
+                    // API 异常时回滚: 移除刚添加的用户消息及后续消息,
+                    // 避免下次重试时历史中出现孤立的 user 消息 (API 要求角色交替)
                     while (!messages.isEmpty()
                             && messages.get(messages.size() - 1).role() != MessageParam.Role.USER) {
                         messages.remove(messages.size() - 1);
@@ -402,9 +452,13 @@ public class S02ToolUse {
                     break;
                 }
 
-                // Append assistant response to history
+                // 将 API 响应转为 MessageParam 并追加到历史 --
+                // response.toParam() 是保持对话状态的关键: 它保留完整的 content blocks (文本 + 工具调用)
                 messages.add(response.toParam());
 
+                // stop_reason 是 Claude 告诉你"我做完了吗"的方式:
+                //   end_turn  = 正常结束, 模型认为已经完整回答了用户的问题
+                //   tool_use  = 模型想调用工具, 需要执行工具并把结果送回
                 StopReason reason = response.stopReason().orElse(null);
 
                 if (reason == StopReason.END_TURN) {
@@ -419,6 +473,9 @@ public class S02ToolUse {
                     break;
 
                 } else if (reason == StopReason.TOOL_USE) {
+                    // stop_reason == tool_use: 模型请求执行工具
+                    // 注意: 工具结果必须作为 USER 角色消息发送 (API 要求),
+                    // 因为从模型的视角看, 工具结果就像"用户提供了新信息"
                     // Collect tool results from all ToolUseBlocks
                     List<ContentBlockParam> toolResultBlocks = new ArrayList<>();
                     for (ContentBlock block : response.content()) {
@@ -438,12 +495,13 @@ public class S02ToolUse {
                                         .build()));
                     }
 
-                    // Append tool results as user message
+                    // 将工具结果作为 user 消息追加 -- API 协议要求工具结果放在 user 角色中
+                    // 每个 tool_result 通过 tool_use_id 与对应的 tool_use 关联
                     messages.add(MessageParam.builder()
                             .role(MessageParam.Role.USER)
                             .contentOfBlockParams(toolResultBlocks)
                             .build());
-                    // Continue inner loop -- model will see results and decide next step
+                    // 继续内循环: 模型看到工具结果后, 会决定是继续调用工具还是 end_turn
                     continue;
 
                 } else {

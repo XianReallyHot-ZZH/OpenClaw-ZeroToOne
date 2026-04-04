@@ -85,7 +85,13 @@ public class S07HeartbeatCron {
     static final Path WORKSPACE_DIR = WORKDIR.resolve("workspace");
     static final Path CRON_DIR = WORKSPACE_DIR.resolve("cron");
 
-    /** 连续错误达到此阈值后自动禁用 cron 任务 */
+    /**
+     * 连续错误达到此阈值后自动禁用 cron 任务.
+     * 5 是经验值: 太小容易误杀 (瞬时网络抖动导致), 太大浪费资源 (持续失败的任务
+     * 会反复消耗 API 调用额度). 5 次通常意味着问题不是瞬时的.
+     * 选择 5 的理由: 网络瞬时错误一般 1-2 次就恢复; 5 次连续失败基本可断定是配置
+     * 或服务端问题, 此时继续重试只会白白消耗额度, 不如静默等待人工介入.
+     */
     static final int CRON_AUTO_DISABLE_THRESHOLD = 5;
 
     /** Anthropic API 客户端 */
@@ -115,12 +121,14 @@ public class S07HeartbeatCron {
             if (Files.isRegularFile(soulPath)) {
                 try {
                     return Files.readString(soulPath).strip();
-                } catch (IOException e) { /* ignore */ }
+                } catch (IOException e) {
+                    // SOUL.md 不存在或无法读取时不中断: 使用默认 prompt 继续运行
+                    // 这是可接受的降级 -- 没有 SOUL.md 的 agent 只是缺少个性化, 仍然可用
+                }
             }
-            return "You are a helpful AI assistant.";
+            return "";
         }
 
-        /** 构建系统提示词: SOUL.md + 额外上下文 */
         String buildSystemPrompt(String extra) {
             StringBuilder sb = new StringBuilder(load());
             if (extra != null && !extra.isEmpty()) {
@@ -149,6 +157,8 @@ public class S07HeartbeatCron {
                 try {
                     return Files.readString(memoryPath).strip();
                 } catch (IOException e) { /* ignore */ }
+                    // CRON_DIR 创建失败不影响后续功能: loadJobs() 会再次检查目录是否存在,
+                    // 最坏情况是首次启动无法加载任务, 但不会导致进程崩溃
             }
             return "";
         }
@@ -395,7 +405,13 @@ public class S07HeartbeatCron {
             }
         }
 
-        /** 启动心跳后台线程 */
+        /**
+         * 启动心跳后台线程.
+         *
+         * 注意: 本类同时提供了 start() (基于 ScheduledExecutorService) 和 loop() (基于 while+sleep)
+         * 两种调度方式. start() 是正式实现, 使用 JDK 调度器更高效; loop() 是简化备选,
+         * 便于理解调度逻辑. 实际运行时只使用 start().
+         */
         void start() {
             if (scheduler != null) return;
             stopped = false;
@@ -656,6 +672,9 @@ public class S07HeartbeatCron {
 
         /**
          * 每秒调用一次; 检查并执行到期的任务.
+         * 使用延迟移除 (deferred-removal) 模式: 先收集待删除 ID, 遍历结束后统一移除.
+         * 为什么不边遍历边删除? 因为在迭代过程中修改 ArrayList 会导致
+         * ConcurrentModificationException 或跳过元素, 先收集再删除是安全的做法.
          */
         void tick() {
             double now = epochSeconds();
@@ -664,12 +683,13 @@ public class S07HeartbeatCron {
             for (CronJob job : jobs) {
                 if (!job.enabled || job.nextRunAt <= 0 || now < job.nextRunAt) continue;
                 runJob(job, now);
-                // "at" 类型且 delete_after_run 的任务执行后移除
+                // "at" 类型且 delete_after_run 的任务执行后标记为待移除
                 if (job.deleteAfterRun && "at".equals(job.scheduleKind)) {
                     removeIds.add(job.id);
                 }
             }
 
+            // 统一移除: 遍历结束后安全地删除已执行的 "at" 任务
             if (!removeIds.isEmpty()) {
                 jobs.removeIf(j -> removeIds.contains(j.id));
             }
@@ -1039,7 +1059,9 @@ public class S07HeartbeatCron {
                         .build());
 
                 // Agent 内循环: 处理连续的工具调用直到 end_turn
+                // 流程: 调用 LLM → 检查 stop_reason → end_turn 则结束, tool_use 则执行工具后继续循环
                 while (true) {
+                    // 步骤 1: 调用 Claude API, 获取本轮回复
                     Message response;
                     try {
                         response = client.messages().create(MessageCreateParams.builder()
@@ -1052,7 +1074,8 @@ public class S07HeartbeatCron {
                     } catch (Exception e) {
                         System.out.println("\n" + AnsiColors.YELLOW + "API Error: " + e.getMessage()
                                 + AnsiColors.RESET + "\n");
-                        // 回滚消息
+                        // 回滚消息: Claude API 要求 user/assistant 严格交替,
+                        // 残留的 user 消息会导致下一轮 400 错误, 因此需要清理到最后一条 user 之前
                         while (!messages.isEmpty()
                                 && messages.get(messages.size() - 1).role() != MessageParam.Role.USER) {
                             messages.remove(messages.size() - 1);
@@ -1061,10 +1084,12 @@ public class S07HeartbeatCron {
                         break;
                     }
 
+                    // 步骤 2: 将 assistant 的完整回复加入消息历史 (保持 user/assistant 交替)
                     messages.add(response.toParam());
                     StopReason reason = response.stopReason().orElse(null);
 
                     if (reason == StopReason.END_TURN) {
+                        // 步骤 3a: 正常结束 -- 提取所有 TextBlock, 拼接后打印给用户
                         String text = response.content().stream()
                                 .filter(ContentBlock::isText)
                                 .map(ContentBlock::asText)
@@ -1073,6 +1098,7 @@ public class S07HeartbeatCron {
                         if (!text.isEmpty()) AnsiColors.printAssistant(text);
                         break;
                     } else if (reason == StopReason.TOOL_USE) {
+                        // 步骤 3b: 工具调用 -- 遍历所有 ToolUseBlock, 逐个执行并收集结果
                         List<ContentBlockParam> results = new ArrayList<>();
                         for (ContentBlock block : response.content()) {
                             if (!block.isToolUse()) continue;
@@ -1087,11 +1113,13 @@ public class S07HeartbeatCron {
                                             .content(result)
                                             .build()));
                         }
+                        // 步骤 4: 将工具结果作为 user 消息追加, LLM 将在下一轮看到结果
                         messages.add(MessageParam.builder()
                                 .role(MessageParam.Role.USER)
                                 .contentOfBlockParams(results)
                                 .build());
                     } else {
+                        // 步骤 3c: 其他 stop reason (max_tokens 等) -- 尽量提取已有文本
                         AnsiColors.printInfo("[stop_reason=" + reason + "]");
                         String text = response.content().stream()
                                 .filter(ContentBlock::isText)

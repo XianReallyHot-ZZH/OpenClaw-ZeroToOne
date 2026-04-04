@@ -84,10 +84,18 @@ public class S08Delivery {
     static final Path QUEUE_DIR = WORKSPACE_DIR.resolve("delivery-queue");
     static final Path FAILED_DIR = QUEUE_DIR.resolve("failed");
 
-    /** 退避时间表 (毫秒): [5s, 25s, 2min, 10min] */
+    /**
+     * 退避时间表 (毫秒): [5s, 25s, 2min, 10min].
+     * 退避时间表: 5s -> 25s -> 2min -> 10min. 指数增长但加了上限, 避免无限等待.
+     * 超过数组长度后使用最后一个值 (10min) 作为上限.
+     * 配合 +-20% 随机抖动避免惊群效应 (多个失败消息同时重试).
+     */
     static final int[] BACKOFF_MS = {5_000, 25_000, 120_000, 600_000};
 
-    /** 最大重试次数 */
+    /**
+     * 最大重试次数.
+     * 5 次后退避时间已达 10 分钟, 继续重试意义不大, 移入 failed/ 目录等待人工处理.
+     */
     static final int MAX_RETRIES = 5;
 
     /** Anthropic API 客户端 */
@@ -176,11 +184,14 @@ public class S08Delivery {
             }
             Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (AtomicMoveNotSupportedException e) {
-            // 文件系统不支持原子移动, 回退到普通替换
+            // 文件系统不支持原子移动 (如某些 NFS/跨文件系统), 回退到普通替换
+            // 降级后果: 失去原子性保证 (极端情况可能读到空文件或不完整文件),
+            // 但不会阻塞程序运行. 对于投递队列场景, 最坏结果是重启时重新投递,
+            // 这在 at-least-once 语义下是可接受的.
             Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
         } finally {
-            // 清理可能残留的临时文件
-            try { Files.deleteIfExists(tmp); } catch (IOException e) { /* ignore */ }
+            // 清理可能残留的临时文件 (无论成功失败都尝试删除, 忽略删除失败)
+            try { Files.deleteIfExists(tmp); } catch (IOException e) { /* ignore: 临时文件残留不影响正确性 */ }
         }
     }
 
@@ -216,7 +227,7 @@ public class S08Delivery {
             try {
                 Files.createDirectories(queueDir);
                 Files.createDirectories(failedDir);
-            } catch (IOException e) { /* ignore */ }
+            } catch (IOException e) { /* ignore: 目录已存在或无法创建, 后续操作会再次尝试或降级 */ }
         }
 
         /**
@@ -265,7 +276,7 @@ public class S08Delivery {
         void ack(String deliveryId) {
             try {
                 Files.deleteIfExists(queueDir.resolve(deliveryId + ".json"));
-            } catch (IOException e) { /* ignore */ }
+            } catch (IOException e) { /* ignore: 确认投递成功时文件删除失败不影响正确性, 文件会在下次重启时被忽略 */ }
         }
 
         /**
@@ -300,7 +311,7 @@ public class S08Delivery {
             Path dst = failedDir.resolve(deliveryId + ".json");
             try {
                 Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e) { /* ignore */ }
+            } catch (IOException e) { /* ignore: 移入 failed/ 失败时消息保留在队列中, 下次启动仍会尝试处理 */ }
         }
 
         /**
@@ -326,9 +337,9 @@ public class S08Delivery {
                     try {
                         Map<String, Object> data = JsonUtils.toMap(Files.readString(file));
                         entries.add(QueuedDelivery.fromMap(data));
-                    } catch (Exception e) { /* skip corrupted files */ }
+                    } catch (Exception e) { /* skip corrupted files: 损坏的 JSON 文件无法解析, 跳过以避免阻塞整个队列 */ }
                 }
-            } catch (IOException e) { /* ignore */ }
+            } catch (IOException e) { /* ignore: 目录无法访问时返回空列表, 不影响程序启动 */ }
             entries.sort(Comparator.comparingDouble(QueuedDelivery::enqueuedAt));
             return entries;
         }
@@ -348,7 +359,7 @@ public class S08Delivery {
                 writeEntry(reset);
                 try {
                     Files.deleteIfExists(failedDir.resolve(entry.id() + ".json"));
-                } catch (IOException e) { /* ignore */ }
+                } catch (IOException e) { /* ignore: 旧文件删除失败时, 下次 loadFailed 仍会加载它, 但 writeEntry 已写入新副本, 不影响正确性 */ }
                 count++;
             }
             return count;
@@ -394,7 +405,11 @@ public class S08Delivery {
 
     /**
      * 将消息按平台限制分片.
-     * 两级拆分: 先按段落 (\n\n) 拆分, 然后对超长段落硬切.
+     * 两级拆分策略:
+     *   Level 1 -- 段落级合并: 按 \n\n 拆分段落, 尽量将相邻段落合并到同一块
+     *              (只要不超限), 减少分片数量, 保持语义完整性.
+     *   Level 2 -- 硬切: 对超过 limit 的单个段落直接按 limit 字符硬切,
+     *              保证即使没有段落边界也能分片.
      *
      * @param text    原始文本
      * @param channel 渠道名
@@ -407,12 +422,12 @@ public class S08Delivery {
 
         List<String> chunks = new ArrayList<>();
         for (String para : text.split("\n\n")) {
-            // 尝试追加到当前块
+            // Level 1: 尝试将段落追加到当前块 (保持语义完整)
             if (!chunks.isEmpty()
                     && chunks.get(chunks.size() - 1).length() + para.length() + 2 <= limit) {
                 chunks.set(chunks.size() - 1, chunks.get(chunks.size() - 1) + "\n\n" + para);
             } else {
-                // 超长段落硬切
+                // Level 2: 超长段落硬切 (按 limit 字符截断)
                 while (para.length() > limit) {
                     chunks.add(para.substring(0, limit));
                     para = para.substring(limit);
@@ -672,7 +687,7 @@ public class S08Delivery {
             if (Files.isRegularFile(soulPath)) {
                 try {
                     loaded = Files.readString(soulPath);
-                } catch (IOException e) { /* use default */ }
+                } catch (IOException e) { /* use default: SOUL.md 读取失败时使用硬编码的 SYSTEM_PROMPT, 缺少个性化但不影响功能 */ }
             }
             personality = loaded;
         }
@@ -931,7 +946,9 @@ public class S08Delivery {
                     .build());
 
             // Agent 内循环: 处理连续的工具调用直到 end_turn
+            // 流程: 调用 LLM -> 检查 stop_reason -> end_turn 则结束并投递, tool_use 则执行工具后继续循环
             while (true) {
+                // 步骤 1: 调用 Claude API, 获取本轮回复
                 Message response;
                 try {
                     response = client.messages().create(MessageCreateParams.builder()
@@ -944,6 +961,8 @@ public class S08Delivery {
                 } catch (Exception e) {
                     System.out.println("\n" + AnsiColors.YELLOW + "API Error: " + e.getMessage()
                             + AnsiColors.RESET + "\n");
+                    // 回滚消息: API 异常时清理到最后一条 user 消息之前,
+                    // 避免 user/assistant 交替规则被破坏导致后续请求 400 错误
                     while (!messages.isEmpty()
                             && messages.get(messages.size() - 1).role() != MessageParam.Role.USER) {
                         messages.remove(messages.size() - 1);
@@ -952,10 +971,12 @@ public class S08Delivery {
                     break;
                 }
 
+                // 步骤 2: 将 assistant 回复加入消息历史
                 messages.add(response.toParam());
                 StopReason reason = response.stopReason().orElse(null);
 
                 if (reason == StopReason.END_TURN) {
+                    // 步骤 3a: 正常结束 -- 提取文本, 打印并投递
                     String text = response.content().stream()
                             .filter(ContentBlock::isText)
                             .map(ContentBlock::asText)
@@ -970,6 +991,7 @@ public class S08Delivery {
                     }
                     break;
                 } else if (reason == StopReason.TOOL_USE) {
+                    // 步骤 3b: 工具调用 -- 遍历所有 ToolUseBlock, 逐个执行并收集结果
                     List<ContentBlockParam> results = new ArrayList<>();
                     for (ContentBlock block : response.content()) {
                         if (!block.isToolUse()) continue;
@@ -995,7 +1017,9 @@ public class S08Delivery {
                             .role(MessageParam.Role.USER)
                             .contentOfBlockParams(results)
                             .build());
+                    // 继续循环: 回到步骤 1, LLM 将看到工具结果并决定下一步
                 } else {
+                    // 步骤 3c: 其他 stop reason (max_tokens 等)
                     AnsiColors.printInfo("[stop_reason=" + reason + "]");
                     String text = response.content().stream()
                             .filter(ContentBlock::isText)

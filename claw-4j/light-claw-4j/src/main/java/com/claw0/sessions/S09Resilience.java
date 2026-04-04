@@ -89,11 +89,24 @@ public class S09Resilience {
                     + "Be concise.";
 
     // 重试限制
+    // 基础迭代上限 24, 每个 profile 额外 8 次, 最终限制在 32-160 之间
+    // 计算: max(BASE_RETRY + PER_PROFILE * numProfiles, 32) 取 min(..., 160)
+    // 例如 3 个 profile: min(max(24+8*3, 32), 160) = min(48, 160) = 48
     static final int BASE_RETRY = 24;
     static final int PER_PROFILE = 8;
+
+    /**
+     * 压缩尝试上限.
+     * 3 次压缩后仍然溢出, 说明问题无法通过压缩解决 (可能是单条消息就超限),
+     * 此时放弃当前 profile, 尝试下一个.
+     */
     static final int MAX_OVERFLOW_COMPACTION = 3;
 
-    // 上下文保护设置
+    /**
+     * 上下文安全上限 (token 数).
+     * 安全上限 180K token: 留出余量防止因 token 估算不精确 (尤其中文文本约 1-2 字符/token,
+     * 远高于英文的 4 字符/token) 导致溢出. Claude 的 200K 上下文中留出 20K 余量.
+     */
     static final int CONTEXT_SAFE_LIMIT = 180_000;
 
     // ================================================================
@@ -312,18 +325,30 @@ public class S09Resilience {
         ContextGuard() { this(CONTEXT_SAFE_LIMIT); }
         ContextGuard(int maxTokens) { this.maxTokens = maxTokens; }
 
-        /** 粗略估算: 每 4 个字符约 1 个 token */
+        /**
+         * 粗略估算: 每 4 个字符约 1 个 token.
+         * 注意: 此估算对中文文本偏差较大 (中文约 1-2 字符/token), 但作为溢出检测的
+         * 粗略阈值已经足够. 真正的溢出会被 API 返回的 overflow 错误捕获并触发压缩.
+         * 这里只是提前预警, 避免浪费一次 API 调用.
+         */
         static int estimateTokens(String text) {
             return text.length() / 4;
         }
 
-        /** 截断过大的 tool_result 块以减少上下文占用 */
+        /**
+         * 截断过大的 tool_result 块以减少上下文占用.
+         *
+         * 简化实现: 当前直接保留原消息, 未做实际截断.
+         * 完整实现需要解析 MessageParam 内容 (可能是 TextBlock 或 ToolResultBlockParam),
+         * 重建每个 MessageParam 并截断过大的 tool_result 内容.
+         * 当前版本保留占位, 因为主要的溢出保护由 compactHistory() 承担,
+         * truncateToolResults 只是补充手段.
+         */
         List<MessageParam> truncateToolResults(List<MessageParam> messages) {
             int maxChars = (int) (maxTokens * 4 * 0.3);
             List<MessageParam> result = new ArrayList<>();
             for (MessageParam msg : messages) {
-                // MessageParam 内容是不可变的, 这里简化处理:
-                // 直接保留原消息 (完整实现需要重建 MessageParam)
+                // MessageParam 内容是不可变的, 简化处理: 直接保留原消息
                 result.add(msg);
             }
             return result;
@@ -525,6 +550,9 @@ public class S09Resilience {
             this.guard = guard;
             this.simulatedFailure = simulatedFailure;
 
+            // 防止工具调用无限循环: 模型可能因 bug 或对抗性输入反复调用工具,
+            // 此上限确保最终终止. 计算方式: 基础上限 24 + 每个 profile 8 次,
+            // 最终限制在 32-160 之间 (太多浪费 API 额度, 太少可能截断正常的多步任务)
             int numProfiles = profileManager.profiles.size();
             this.maxIterations = Math.min(
                     Math.max(BASE_RETRY + PER_PROFILE * numProfiles, 32), 160);
@@ -656,7 +684,15 @@ public class S09Resilience {
 
         /**
          * Layer 3: 标准工具调用循环.
-         * 运行直到 end_turn 或报错. 任何 API 异常都向外层传播.
+         * 运行直到 end_turn 或报错. 任何 API 异常都向外层传播 (由 Layer 2 处理).
+         *
+         * 内循环步骤:
+         *   步骤 1: 调用 Claude API, 获取本轮回复
+         *   步骤 2: 将 assistant 回复加入消息历史
+         *   步骤 3a: end_turn -> 提取文本, 返回结果
+         *   步骤 3b: tool_use -> 执行工具, 追加结果, 继续循环
+         *   步骤 3c: 其他 stop reason -> 提取已有文本, 返回
+         *   超过 maxIterations 次迭代 -> 抛异常, 防止无限循环
          */
         RunResult runAttempt(AnthropicClient apiClient, String model,
                              String system, List<MessageParam> messages,
@@ -666,7 +702,7 @@ public class S09Resilience {
 
             while (iteration < maxIterations) {
                 iteration++;
-
+                // 步骤 1: 调用 Claude API
                 Message response = apiClient.messages().create(MessageCreateParams.builder()
                         .model(model)
                         .maxTokens(8096)
@@ -675,10 +711,12 @@ public class S09Resilience {
                         .messages(currentMessages)
                         .build());
 
+                // 步骤 2: 将 assistant 回复加入消息历史
                 currentMessages.add(response.toParam());
                 StopReason reason = response.stopReason().orElse(null);
 
                 if (reason == StopReason.END_TURN) {
+                    // 步骤 3a: 正常结束 -- 提取文本并返回
                     String text = response.content().stream()
                             .filter(ContentBlock::isText)
                             .map(ContentBlock::asText)
@@ -686,6 +724,7 @@ public class S09Resilience {
                             .collect(Collectors.joining());
                     return new RunResult(text, currentMessages);
                 } else if (reason == StopReason.TOOL_USE) {
+                    // 步骤 3b: 工具调用 -- 遍历所有 ToolUseBlock, 逐个执行并收集结果
                     List<ContentBlockParam> toolResults = new ArrayList<>();
                     for (ContentBlock block : response.content()) {
                         if (!block.isToolUse()) continue;
@@ -703,11 +742,13 @@ public class S09Resilience {
                                         .content(result)
                                         .build()));
                     }
+                    // 步骤 4: 将工具结果作为 user 消息追加, 继续下一轮循环
                     currentMessages.add(MessageParam.builder()
                             .role(MessageParam.Role.USER)
                             .contentOfBlockParams(toolResults)
                             .build());
                 } else {
+                    // 步骤 3c: 其他 stop reason (max_tokens 等)
                     String text = response.content().stream()
                             .filter(ContentBlock::isText)
                             .map(ContentBlock::asText)

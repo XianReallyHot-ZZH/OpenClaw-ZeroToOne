@@ -102,16 +102,35 @@ public class S06Intelligence {
     /** workspace 目录, 存放所有配置和状态文件 */
     static final Path WORKSPACE_DIR = WORKDIR.resolve("workspace");
 
-    /** 单个 Bootstrap 文件最大字符数 */
+    /**
+     * 单个 Bootstrap 文件最大字符数.
+     * 单个文件上限: 约 5000 token (按 4 字符/token 估算), 超出截断.
+     * 这是为了在有限的上下文窗口中为其他内容 (记忆/技能/对话) 留出空间,
+     * 避免单个配置文件独占整个 prompt.
+     */
     static final int MAX_FILE_CHARS = 20_000;
 
-    /** 所有 Bootstrap 文件总字符数上限 */
+    /**
+     * 所有 Bootstrap 文件总字符数上限.
+     * 所有 Bootstrap 文件总上限: Claude 上下文约 200K token, 预留 50K 给对话历史和工具输出,
+     * 其余分配给系统提示词. 此上限确保 Bootstrap 文件不会把对话空间挤占殆尽.
+     * 150_000 字符 ≈ 37_500 token, 留出了足够的对话空间.
+     */
     static final int MAX_TOTAL_CHARS = 150_000;
 
-    /** 最大技能数量 */
+    /**
+     * 最大技能数量.
+     * 技能上限: 避免扫描过多目录影响启动速度. 150 是实际项目中的经验上限:
+     * 技能过多时扫描耗时增加, 且系统提示词膨胀会导致模型在指令跟随时出现"注意力稀释".
+     * 如需更多技能, 应使用按需加载而非全量注入.
+     */
     static final int MAX_SKILLS = 150;
 
-    /** 技能 prompt 块最大字符数 */
+    /**
+     * 技能 prompt 块最大字符数.
+     * 技能提示词上限: 约 7500 token (按 4 字符/token 估算), 在上下文预算中的合理占比.
+     * 技能注入只是系统提示词的一部分, 还需为 Identity/Soul/Tools/Memory 等层留出空间.
+     */
     static final int MAX_SKILLS_PROMPT = 30_000;
 
     /**
@@ -515,7 +534,8 @@ public class S06Intelligence {
             try {
                 Files.createDirectories(memoryDir);
             } catch (IOException e) {
-                // 目录创建失败时会在后续操作中暴露错误
+                // 目录创建失败时不中断初始化: 后续 readAllChunks/writeMemory 会再次尝试,
+                // 或在那时向用户报告具体错误. 静默忽略比在这里 crash 更友好.
             }
         }
 
@@ -1403,7 +1423,9 @@ public class S06Intelligence {
                     .build());
 
             // ---- Agent 内循环: 处理连续的工具调用直到 end_turn ----
+            // 流程: 调用 LLM → 检查 stop_reason → end_turn 则结束, tool_use 则执行工具后继续循环
             while (true) {
+                // 步骤 1: 调用 Claude API, 获取本轮回复
                 Message response;
                 try {
                     response = client.messages().create(MessageCreateParams.builder()
@@ -1415,6 +1437,7 @@ public class S06Intelligence {
                             .build());
                 } catch (Exception e) {
                     // API 异常: 回滚最后一条消息, 避免下一轮 role 交替规则失败
+                    // Claude API 要求 user/assistant 严格交替, 残留的 user 消息会导致下一轮 400 错误
                     System.out.println("\n" + AnsiColors.YELLOW + "API Error: " + e.getMessage()
                             + AnsiColors.RESET + "\n");
                     // 先移除非 user 消息
@@ -1427,12 +1450,12 @@ public class S06Intelligence {
                     break;
                 }
 
-                // 将 assistant 的完整回复加入消息历史
+                // 步骤 2: 将 assistant 的完整回复加入消息历史 (保持 user/assistant 交替)
                 messages.add(response.toParam());
                 StopReason reason = response.stopReason().orElse(null);
 
                 if (reason == StopReason.END_TURN) {
-                    // 正常结束: 提取文本并打印
+                    // 步骤 3a: 正常结束 -- 提取所有 TextBlock, 拼接后打印给用户
                     String text = response.content().stream()
                             .filter(ContentBlock::isText)
                             .map(ContentBlock::asText)
@@ -1444,7 +1467,7 @@ public class S06Intelligence {
                     break;
 
                 } else if (reason == StopReason.TOOL_USE) {
-                    // 工具调用: 收集所有 ToolUseBlock 并执行
+                    // 步骤 3b: 工具调用 -- 遍历所有 ToolUseBlock, 逐个执行并收集结果
                     List<ContentBlockParam> results = new ArrayList<>();
                     for (ContentBlock block : response.content()) {
                         if (!block.isToolUse()) continue;
@@ -1458,15 +1481,15 @@ public class S06Intelligence {
                                         .content(result)
                                         .build()));
                     }
-                    // 将工具结果加入消息历史, 继续循环
+                    // 步骤 4: 将工具结果作为 user 消息追加, LLM 将在下一轮看到结果
                     messages.add(MessageParam.builder()
                             .role(MessageParam.Role.USER)
                             .contentOfBlockParams(results)
                             .build());
-                    continue;
+                    continue;  // 回到步骤 1, 继续循环
 
                 } else {
-                    // 其他 stop reason (max_tokens 等)
+                    // 步骤 3c: 其他 stop reason (max_tokens 等) -- 尽量提取已有文本
                     AnsiColors.printInfo("[stop_reason=" + reason + "]");
                     String text = response.content().stream()
                             .filter(ContentBlock::isText)

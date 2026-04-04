@@ -155,7 +155,12 @@ public class S10Concurrency {
         private final ReentrantLock lock = new ReentrantLock();
         private final Condition idle = lock.newCondition();
 
-        /** 内部双端队列, 存储 (callable, future, generation) 三元组 */
+        /**
+         * 内部有界队列, 存储 (callable, future, generation) 三元组.
+         * 容量 1024: 防止 OOM. 使用非阻塞的 offer/poll 而非阻塞的 put/take,
+         * 因为 pump() 在 lock 保护范围内调用, 如果 put 阻塞会死锁.
+         * 1024 远超实际需求 (每个 lane 通常只有个位数任务), 主要作为安全阀.
+         */
         private final ArrayBlockingQueue<QueuedItem> deque;
 
         /** 当前活跃执行的任务数 */
@@ -223,6 +228,10 @@ public class S10Concurrency {
                 if (item == null) break;
 
                 // 检查 generation: 过期任务直接取消
+                // 场景: resetAll() 已递增 generation, 但旧任务仍在队列中.
+                // 例如: 用户输入了 /reset 命令, resetAll() 将 generation 从 0 变为 1,
+                // 但队列中可能还有 generation=0 的旧 heartbeat/cron 任务.
+                // 此时旧任务应该被取消而非执行, 否则会与新生命周期的任务竞争.
                 if (item.gen() != generation) {
                     item.future().cancel(false);
                     continue;
@@ -254,7 +263,14 @@ public class S10Concurrency {
 
         /**
          * 递减活跃计数. 仅在 generation 匹配时重新泵送.
-         * 过期任务完成时不重新泵送, 避免唤醒旧生命周期的工作.
+         *
+         * 避免竞态条件: 如果没有 generation 检查, 旧生命周期的任务完成时会错误地触发 pump(),
+         * 唤醒不应执行的新任务. 场景: resetAll() 已递增 generation 并清空了队列意图,
+         * 但旧任务仍在执行中; 旧任务完成时若触发 pump, 会从空的队列中取出 null 直接返回,
+         * 虽然不会出错但会做无用功; 更危险的是, 如果此时有新任务入队 (新 generation),
+         * 旧任务的 taskDone 可能会错误地触发新任务的提前执行.
+         * 因此只在 expectedGen == generation 时才 pump, 确保只有当前生命周期的任务
+         * 才能驱动队列前进.
          */
         void taskDone(int expectedGen) {
             lock.lock();
@@ -1332,6 +1348,10 @@ public class S10Concurrency {
                     case "/trigger" -> {
                         heartbeat.heartbeatTick();
                         AnsiColors.printInfo("  Heartbeat tick triggered.");
+                        // 临时方案: 等待 500ms 让异步心跳完成后再排空输出队列.
+                        // 正式做法应使用 CompletableFuture.get(timeout) 等待完成,
+                        // 但 heartbeatTick 内部入队到 CommandQueue, 涉及多层异步调用,
+                        // 简化为固定等待. 500ms 足够覆盖绝大多数网络延迟.
                         try { Thread.sleep(500); } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                         }
@@ -1404,6 +1424,12 @@ public class S10Concurrency {
      * 执行一次完整的用户对话回合 (在 main lane 的虚拟线程中运行).
      *
      * 包含完整的工具调用循环, 直到 end_turn 或错误.
+     * 内循环步骤:
+     *   步骤 1: 调用 Claude API, 获取本轮回复
+     *   步骤 2: 将 assistant 回复加入消息历史 (保持 user/assistant 交替)
+     *   步骤 3a: end_turn -> 提取文本, 返回给用户
+     *   步骤 3b: tool_use -> 执行工具, 将结果作为 user 消息追加, 回到步骤 1
+     *   步骤 3c: 其他 stop reason -> 尽量提取已有文本, 返回
      *
      * @param userMsg     用户输入消息
      * @param messages    消息历史 (会被修改)
@@ -1420,7 +1446,9 @@ public class S10Concurrency {
 
         String finalText = "";
 
+        // 工具调用内循环: 连续处理 LLM 的工具调用请求, 直到 end_turn
         while (true) {
+            // 步骤 1: 调用 Claude API
             Message response;
             try {
                 response = client.messages().create(MessageCreateParams.builder()
@@ -1440,10 +1468,12 @@ public class S10Concurrency {
                 return "[API Error: " + exc.getMessage() + "]";
             }
 
+            // 步骤 2: 将 assistant 回复加入消息历史 (保持 user/assistant 交替)
             messages.add(response.toParam());
             StopReason reason = response.stopReason().orElse(null);
 
             if (reason == StopReason.END_TURN) {
+                // 步骤 3a: 正常结束 -- 提取所有 TextBlock, 拼接为最终回复
                 finalText = response.content().stream()
                         .filter(ContentBlock::isText)
                         .map(ContentBlock::asText)
@@ -1451,6 +1481,7 @@ public class S10Concurrency {
                         .collect(Collectors.joining());
                 break;
             } else if (reason == StopReason.TOOL_USE) {
+                // 步骤 3b: 工具调用 -- 遍历所有 ToolUseBlock, 逐个执行并收集结果
                 List<ContentBlockParam> results = new ArrayList<>();
                 for (ContentBlock block : response.content()) {
                     if (!block.isToolUse()) continue;
@@ -1472,11 +1503,14 @@ public class S10Concurrency {
                                     .content(result)
                                     .build()));
                 }
+                // 步骤 4: 将工具结果作为 user 消息追加, LLM 将在下一轮看到结果
                 messages.add(MessageParam.builder()
                         .role(MessageParam.Role.USER)
                         .contentOfBlockParams(results)
                         .build());
+                // 回到步骤 1, 继续循环
             } else {
+                // 步骤 3c: 其他 stop reason (max_tokens 等) -- 尽量提取已有文本
                 AnsiColors.printInfo("[stop_reason=" + reason + "]");
                 finalText = response.content().stream()
                         .filter(ContentBlock::isText)
