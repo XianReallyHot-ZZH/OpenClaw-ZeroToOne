@@ -18,3 +18,14 @@ git submodule add https://github.com/shareAI-lab/claw0 vendors/claw0
 
 仔细阅读 @vendors/claw0 项目代码和 @Specs/learn-claw0-arch.md 文档，然后根据 @specs/claw0-java-rewrite-analysis.md 文档，java版本选为21，为springboot企业级重写方案撰写一份详细的实施计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下。如果你有任何不明确的地方，向我提问。
 
+
+# 检视项目
+
+检视 @specs/light-claw0-java-rewrite-plan.md 文档，要求 java 版本为 21，其他依赖的版本都调整为最新的版本，然后论证方案的可行性，详细检视方案还有没有欠缺，还有没有没考虑的地方，还有没有可以优化的地方。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+
+# 编码执行计划
+
+根据 @specs/light-claw0-java-rewrite-plan.md 撰写一份详细的、可实施的、可落地的、规划合理的编码执行计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+
+
+
