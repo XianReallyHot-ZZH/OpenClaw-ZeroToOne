@@ -34,7 +34,7 @@ git submodule add https://github.com/shareAI-lab/claw0 vendors/claw0
 （3）@specs/claw0-java-rewrite-plan.md 是claw0的重写分析文档
 （4）@specs/light-claw0/light-claw0-java-rewrite-plan.md 是claw0的轻量级重写计划
 （5）@specs/light-claw0/light-claw0-java-coding-execution-plan.md 是claw0的轻量级重写编码执行计划
-现在你的任务是根据 @specs/light-claw0/light-claw0-java-coding-execution-plan.md 文档，开始编码实施，代码放在 @claw-4j/light-claw-4j 目录下。执行过程中，有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+现在你的任务是根据 @specs/light-claw0/light-claw0-java-coding-execution-plan.md 文档，开始编码实施，代码放在 @claw-4j/light-claw-4j 目录下,要求代码注释用中文，注释要详细。执行过程中，有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
 
 
 
