@@ -16,7 +16,11 @@ git submodule add https://github.com/shareAI-lab/claw0 vendors/claw0
 
 根据 @specs/claw0-java-rewrite-analysis.md 文档，选定轻量级重写方案，撰写一份详细的实施计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下
 
-仔细阅读 @vendors/claw0 项目代码和 @Specs/learn-claw0-arch.md 文档，然后根据 @specs/claw0-java-rewrite-analysis.md 文档，选定springboot企业级重写方案，撰写一份详细的实施计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+文件清单：
+（1）@vendors/claw0 是重写对象claw0的源码目录
+（2）@Specs/learn-claw0-arch.md 是claw0的架构分析文档
+（3）@specs/claw0-java-rewrite-analysis.md 是claw0的重写分析文档
+现在你的任务是根据  @specs/claw0-java-rewrite-analysis.md 文档，选定springboot企业级重写方案，撰写一份详细的实施计划，如需图表，使用 mermaid chart，文档放在 @specs/enterprise-claw0 目录下。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
 
 
 # 检视项目
@@ -31,7 +35,7 @@ git submodule add https://github.com/shareAI-lab/claw0 vendors/claw0
 文件清单：
 （1）@vendors/claw0 是重写对象claw0的源码目录
 （2）@Specs/learn-claw0-arch.md 是claw0的架构分析文档
-（3）@specs/claw0-java-rewrite-plan.md 是claw0的重写分析文档
+（3）@specs/claw0-java-rewrite-analysis.md 是claw0的重写分析文档
 （4）@specs/light-claw0/light-claw0-java-rewrite-plan.md 是claw0的轻量级重写计划
 （5）@specs/light-claw0/light-claw0-java-coding-execution-plan.md 是claw0的轻量级重写编码执行计划
 现在你的任务是根据 @specs/light-claw0/light-claw0-java-coding-execution-plan.md 文档，开始编码实施，代码放在 @claw-4j/light-claw-4j 目录下,要求代码注释用中文，注释要详细。执行过程中，有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
