@@ -241,13 +241,12 @@ flowchart TB
 public class ResilienceRunner {
     private final ProfileManager profileManager;
     private final ContextGuard contextGuard;
-    private final ToolRegistry toolRegistry;
 
     private static final int BASE_RETRY = 3;
     private static final int PER_PROFILE = 5;
 
-    public AgentTurnResult run(String systemPrompt, List<MessageParam> messages,
-                               List<ToolDefinition> tools) {
+    public AgentTurnResult run(String agentId, String sessionId, String userMessage,
+                               AgentLoop agentLoop) {
         int maxIterations = Math.min(
             Math.max(BASE_RETRY + PER_PROFILE * profileManager.getAllProfiles().size(), 32),
             160
@@ -258,31 +257,27 @@ public class ResilienceRunner {
             // Layer 1: 选择 Profile
             Optional<AuthProfile> profileOpt = profileManager.selectProfile();
             if (profileOpt.isEmpty()) {
-                // 所有 Profile 耗尽 → 降级模型
-                return attemptFallbackModel(systemPrompt, messages, tools);
+                return attemptFallbackModel(agentId, sessionId, userMessage, agentLoop);
             }
 
             AuthProfile profile = profileOpt.get();
             AnthropicClient client = profile.createClient();
 
             try {
-                // Layer 2: ContextGuard 包装
-                Message response = contextGuard.guardApiCall(client, params);
+                // 委托给 AgentLoop 执行（AgentLoop 内部使用 ContextGuard）
+                AgentTurnResult result = agentLoop.runTurn(agentId, sessionId, userMessage, client);
                 profileManager.markSuccess(profile);
-
-                // Layer 3: 工具使用循环
-                return processToolUseLoop(client, response, messages, tools);
+                return result;
 
             } catch (Exception ex) {
                 FailoverReason reason = FailoverReason.classify(ex);
 
                 if (reason instanceof FailoverReason.ContextOverflow) {
-                    // 上下文溢出不换 Profile，重试
+                    // 上下文溢出不换 Profile，AgentLoop 内的 ContextGuard 会处理压缩
                     iteration++;
                     continue;
                 }
 
-                // 其他错误 → 标记 Profile 冷却，换下一个
                 profileManager.markFailure(profile, reason);
                 iteration++;
             }
@@ -296,8 +291,8 @@ public class ResilienceRunner {
 **降级模型链**:
 
 ```java
-private AgentTurnResult attemptFallbackModel(String system, List<MessageParam> messages,
-                                              List<ToolDefinition> tools) {
+private AgentTurnResult attemptFallbackModel(String agentId, String sessionId,
+                                              String userMessage, AgentLoop agentLoop) {
     List<String> fallbackModels = List.of(
         "claude-haiku-4-20250514"
     );
@@ -307,9 +302,8 @@ private AgentTurnResult attemptFallbackModel(String system, List<MessageParam> m
             // 使用第一个可用的 Profile，但切换模型
             var profile = profileManager.selectProfile().orElseThrow();
             var client = profile.createClient();
-            // 用降级模型构建参数
-            // ... 调用 API
-            return processToolUseLoop(client, response, messages, tools);
+            // 委托给 AgentLoop，使用降级模型的 client
+            return agentLoop.runTurn(agentId, sessionId, userMessage, client);
         } catch (Exception e) {
             continue;
         }
@@ -478,6 +472,12 @@ sequenceDiagram
 public class CommandQueue {
     private final Map<String, LaneQueue> lanes = new ConcurrentHashMap<>();
     private final DeliveryProperties deliveryProps;
+    private final ConcurrencyProperties concurrencyProps;
+
+    public CommandQueue(DeliveryProperties deliveryProps, ConcurrencyProperties concurrencyProps) {
+        this.deliveryProps = deliveryProps;
+        this.concurrencyProps = concurrencyProps;
+    }
 
     /** 入队到指定 Lane */
     public CompletableFuture<Object> enqueue(String laneName, Callable<Object> task) {
@@ -511,7 +511,11 @@ public class CommandQueue {
     }
 
     private int getMaxConcurrency(String laneName) {
-        // 从配置中读取 concurrency.lanes.{name}.max-concurrency
+        // 从 ConcurrencyProperties 配置中读取
+        if (concurrencyProps != null && concurrencyProps.lanes() != null) {
+            ConcurrencyProperties.LaneConfig config = concurrencyProps.lanes().get(laneName);
+            if (config != null) return config.maxConcurrency();
+        }
         return 1;  // 默认值
     }
 }
@@ -521,23 +525,56 @@ public class CommandQueue {
 
 ## 4. Day 48-49: 集成接线
 
-### 4.1 修改 `AgentLoop.java`
+### 4.1 修改 `AgentLoop.java` — 重构策略
+
+**关键设计决策**: AgentLoop 的 `processToolUseLoop()` 方法**保留在 AgentLoop 中**，不移动到 ResilienceRunner。
+ResilienceRunner 仅负责**调用前的准备和重试编排**（Profile 选择 → ContextGuard 包装），实际 API 调用和工具循环仍由 AgentLoop 执行。
+
+**重构后的调用链**:
+```
+GatewayWSHandler → CommandQueue.enqueue()
+    → ResilienceRunner.run()  // 选择 Profile、包装 ContextGuard
+        → AgentLoop.executeWithClient(client, system, messages, tools)  // 用指定 client 执行
+            → processToolUseLoop()  // 工具使用循环（不变）
+```
 
 ```java
-// AgentLoop 不再直接调用 Claude API
-// 而是通过 ResilienceRunner 包装
 @Service
 public class AgentLoop {
-    private final ResilienceRunner resilienceRunner;  // 替代直接 client 调用
+    private final ToolRegistry toolRegistry;
+    private final SessionStore sessionStore;
+    private final PromptAssembler promptAssembler;
+    // 不再持有 AnthropicClient — 由 ResilienceRunner 通过参数注入
 
-    public AgentTurnResult runTurn(String agentId, String sessionId, String userMessage) {
-        // ... 加载历史、构建消息、组装提示词 ...
+    /**
+     * 使用指定的 AnthropicClient 执行对话回合
+     * @param client 由 ResilienceRunner 提供的 Profile 对应的 client
+     */
+    public AgentTurnResult executeWithClient(AnthropicClient client,
+            String systemPrompt, List<MessageParam> messages) {
+        return processToolUseLoop(client, systemPrompt, messages);
+    }
 
-        // 使用 ResilienceRunner 执行 (替代直接 client.messages().create())
-        return resilienceRunner.run(systemPrompt, messages, toolRegistry.getSchemas());
+    /**
+     * 入口方法 — 由 ResilienceRunner 调用
+     * 加载历史 → 构建消息 → 组装提示词 → 执行
+     */
+    public AgentTurnResult runTurn(String agentId, String sessionId, String userMessage,
+                                    AnthropicClient client) {
+        // 1. 加载历史
+        List<MessageParam> messages = sessionStore.loadSession(sessionId);
+        // 2. 追加用户消息
+        // 3. 组装系统提示词
+        String systemPrompt = promptAssembler.buildSystemPrompt(agentId, ...);
+        // 4. 使用注入的 client 执行
+        return executeWithClient(client, systemPrompt, messages);
     }
 }
 ```
+
+> **为什么不让 ResilienceRunner 包含 tool-use 循环?**
+> 保持 AgentLoop 为对话逻辑的唯一所有者，ResilienceRunner 仅负责基础设施层面（认证、重试、降级）。
+> 这样 AgentLoop 的业务逻辑清晰，测试也更容易。
 
 ### 4.2 修改 `HeartbeatService.java`
 
@@ -610,13 +647,16 @@ private Object handleSend(JsonNode params) {
 | `ResilienceRunnerTest` | 429 → 切换 Profile | P0 |
 | `ResilienceRunnerTest` | 上下文溢出 → 不换 Profile | P0 |
 | `ResilienceRunnerTest` | 所有 Profile 耗尽 → 降级 | P1 |
+| `ResilienceRunnerTest` | ResilienceRunner 委托给 AgentLoop 而非自己执行 tool loop | P0 |
 | `ConcurrencyIntegrationTest` | Heartbeat + Cron + User 共存 | P0 |
 
 ---
 
 ## 6. 验收检查清单 (M6)
 
-- [ ] API 密钥轮转：主 key 429 时自动切换到备用 key
+- [ ] API 密钥轮转：主 key 429/401 时自动切换到备用 key，ResilienceRunner 委托给 AgentLoop 执行对话，不自己包含 tool-use 循环
+- [ ] AgentLoop 接受外部传入的 AnthropicClient，不自己持有
+- [ ] ContextGuard 通过方法参数接收 client，ResilienceRunner 轮转 Profile 时注入不同 client
 - [ ] 冷却计时：失败的 Profile 在冷却期内不会被选中
 - [ ] 冷却恢复：冷却期结束后 Profile 重新可用
 - [ ] 上下文溢出：自动截断工具结果或压缩历史

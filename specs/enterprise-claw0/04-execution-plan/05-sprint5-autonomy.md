@@ -226,6 +226,22 @@ public class CronJobService {
 }
 ```
 
+**Cron 运行日志**:
+
+```java
+/** 记录 Cron 运行日志 */
+private void logCronRun(CronJob job, boolean success, String error) {
+    Path logFile = workspacePath.resolve("cron").resolve("cron-runs.jsonl");
+    Map<String, Object> entry = Map.of(
+        "job_id", job.getId(),
+        "timestamp", Instant.now().toString(),
+        "success", success,
+        "error", error != null ? error : ""
+    );
+    JsonUtils.appendJsonl(logFile, entry);
+}
+```
+
 **CRON.json 加载**:
 
 ```java
@@ -240,6 +256,45 @@ public void loadJobs() {
     jobs.addAll(loaded);
 }
 ```
+
+**运行时持久化**:
+
+```java
+/** 运行时添加任务并持久化到 CRON.json */
+public void addJobAndPersist(CronJob job) {
+    jobs.add(job);
+    persistJobs();
+}
+
+/** 运行时移除任务并持久化 */
+public void removeJobAndPersist(String jobId) {
+    jobs.removeIf(j -> j.getId().equals(jobId));
+    persistJobs();
+}
+
+private void persistJobs() {
+    try {
+        String json = objectMapper.writerWithDefaultPrettyPrinter()
+            .writeValueAsString(jobs);
+        FileUtils.writeAtomically(cronFilePath, json);
+    } catch (IOException e) {
+        log.error("Failed to persist CRON.json", e);
+    }
+}
+```
+
+> **持久化策略**: 每次运行时变更（添加/移除/禁用任务）都全量重写 `CRON.json`。
+> 使用 `FileUtils.writeAtomically()` 确保写入安全。Cron 任务数量通常 < 50，全量重写开销可忽略。
+
+**WebSocket 通知**:
+
+在 CronJobService 执行任务完成后，投递 Cron 结果时通知 WebSocket 客户端：
+
+```java
+gatewayWebSocketHandler.notifyCronOutput(job.getId(), at.agentId(), result.text());
+```
+
+> **注意**: `GatewayWebSocketHandler` 需通过构造函数注入到 `CronJobService` 和 `HeartbeatService` 中。
 
 ### 3.2 文件 5.5 — `HeartbeatService.java`
 
@@ -285,6 +340,9 @@ public class HeartbeatService {
 
         // 投递结果
         deliveryQueue.enqueue(defaultChannel, defaultPeerId, output);
+
+        // 通过 GatewayWebSocketHandler 通知 WebSocket 客户端
+        gatewayWebSocketHandler.notifyHeartbeatOutput(defaultAgentId, output);
     }
 
     private boolean isWithinActiveHours() {
@@ -543,6 +601,9 @@ public class DeliveryRunner {
 | `CronJobServiceTest` | 连续 5 次错误自动禁用 | P0 |
 | `CronJobServiceTest` | deleteAfterRun 一次性任务 | P1 |
 | `CronJobServiceTest` | CRON.json 加载 | P1 |
+| `CronJobServiceTest` | 运行时添加任务持久化到 CRON.json | P1 |
+| `CronJobServiceTest` | 运行时移除任务并更新文件 | P1 |
+| `CronJobServiceTest` | cron-runs.jsonl 日志记录 | P2 |
 | `HeartbeatServiceTest` | 活跃时段内触发 | P0 |
 | `HeartbeatServiceTest` | 活跃时段外跳过 | P0 |
 | `HeartbeatServiceTest` | 输出与上次相同时跳过 | P1 |
@@ -570,3 +631,7 @@ public class DeliveryRunner {
 - [ ] 投递失败时指数退避重试
 - [ ] 超过重试上限移入 failed/ 目录
 - [ ] 消息按平台限制正确分块
+- [ ] 运行时添加的 Cron 任务持久化到 `CRON.json`，重启后自动加载
+- [ ] Cron 运行日志写入 `workspace/cron/cron-runs.jsonl`
+- [ ] 心跳输出通过 `heartbeat.output` WebSocket 通知推送给客户端
+- [ ] Cron 任务输出通过 `cron.output` WebSocket 通知推送给客户端

@@ -131,6 +131,56 @@ public class BindingTable {
 
 **线程安全**: 使用 `CopyOnWriteArrayList` — 读多写少场景（绑定变更不频繁）。
 
+### 2.3 文件 — `BindingStore.java`
+
+**JSONL 持久化**: 运行时动态添加的路由绑定需要持久化到磁盘，重启后自动恢复。
+
+```java
+@Service
+public class BindingStore {
+    private final Path storePath;  // workspace/bindings.jsonl
+    private final BindingTable bindingTable;
+
+    @PostConstruct
+    void loadBindings() {
+        if (!Files.exists(storePath)) return;
+        JsonUtils.readJsonl(storePath, Binding.class)
+            .forEach(bindingTable::addBinding);
+    }
+
+    /** 添加绑定并持久化 */
+    public void addAndPersist(Binding binding) {
+        bindingTable.addBinding(binding);
+        appendToStore(binding);
+    }
+
+    /** 移除绑定并更新存储 */
+    public boolean removeAndPersist(int tier, String key) {
+        boolean removed = bindingTable.removeBinding(tier, key);
+        if (removed) rewriteStore();
+        return removed;
+    }
+
+    private void appendToStore(Binding binding) {
+        JsonUtils.appendJsonl(storePath, binding);
+    }
+
+    private void rewriteStore() {
+        // 全量重写 (remove 时需要)
+        List<Binding> all = bindingTable.listBindings();
+        FileUtils.writeAtomically(storePath,
+            all.stream().map(JsonUtils::toJson).collect(Collectors.joining("\n")));
+    }
+}
+```
+
+**文件格式** (`workspace/bindings.jsonl`):
+```jsonl
+{"tier":5,"key":"default","agentId":"luna","priority":0}
+{"tier":4,"key":"telegram","agentId":"luna","priority":0}
+{"tier":1,"key":"user_12345","agentId":"sage","priority":10}
+```
+
 ---
 
 ## 3. Day 22: Agent 管理
@@ -172,6 +222,115 @@ public class AgentManager {
     }
 }
 ```
+
+### 3.2.1 文件 — `AgentStore.java`
+
+**JSONL 持久化**: 运行时动态注册的 Agent 配置需要持久化到磁盘。
+
+```java
+@Service
+public class AgentStore {
+    private final Path storePath;  // workspace/agents.jsonl
+    private final AgentManager agentManager;
+
+    @PostConstruct
+    void loadAgents() {
+        if (!Files.exists(storePath)) return;
+        JsonUtils.readJsonl(storePath, AgentConfig.class)
+            .forEach(agentManager::register);
+    }
+
+    /** 注册 Agent 并持久化 */
+    public void registerAndPersist(AgentConfig config) {
+        agentManager.register(config);
+        JsonUtils.appendJsonl(storePath, config);
+    }
+
+    /** 注销 Agent 并更新存储 */
+    public boolean unregisterAndPersist(String agentId) {
+        // AgentManager.unregister 是移除操作
+        agentManager.unregister(agentId);
+        rewriteStore();
+        return true;
+    }
+
+    private void rewriteStore() {
+        List<AgentConfig> all = agentManager.listAgents();
+        FileUtils.writeAtomically(storePath,
+            all.stream().map(JsonUtils::toJson).collect(Collectors.joining("\n")));
+    }
+}
+```
+
+**文件格式** (`workspace/agents.jsonl`):
+```jsonl
+{"id":"luna","name":"Luna","personality":"温暖、好奇、轻幽默","model":"claude-sonnet-4-20250514","dmScope":"PER_PEER"}
+```
+
+---
+
+## 3.5 Day 22: 认证扩展点
+
+### 3.5.1 文件 — `AuthFilter.java`
+
+```java
+package com.openclaw.enterprise.auth;
+
+/**
+ * 认证过滤器接口 — 预留扩展点
+ * 默认实现为放行所有请求。生产环境可替换为自定义实现（如 API Key、JWT）。
+ *
+ * 替换方式：注册一个 @Component 且不使用 @Primary 的实现类即可覆盖默认行为。
+ */
+public interface AuthFilter {
+    /**
+     * 校验请求是否被允许
+     * @param token 请求携带的认证令牌 (来自 Header、Query 或 WebSocket 握手)
+     * @param path 请求路径
+     * @return true=放行, false=拒绝
+     */
+    boolean allow(String token, String path);
+}
+```
+
+### 3.5.2 文件 — `DefaultAuthFilter.java`
+
+```java
+@Component
+@Primary
+@ConditionalOnMissingBean(AuthFilter.class)
+public class DefaultAuthFilter implements AuthFilter {
+    @Override
+    public boolean allow(String token, String path) {
+        return true;  // 默认放行所有请求
+    }
+}
+```
+
+> **扩展方式**: 生产环境中，创建一个 `@Component` 实现类即可自动替换默认行为：
+> ```java
+> @Component
+> public class ApiKeyAuthFilter implements AuthFilter {
+>     @Value("${auth.api-key}") private String apiKey;
+>     @Override
+>     public boolean allow(String token, String path) {
+>         return apiKey.equals(token);
+>     }
+> }
+> ```
+
+### 3.6 文件 — `ConcurrencyProperties.java`
+
+```java
+@ConfigurationProperties(prefix = "concurrency")
+public record ConcurrencyProperties(
+    Map<String, LaneConfig> lanes
+) {
+    public record LaneConfig(int maxConcurrency) {}
+}
+```
+
+This allows `CommandQueue.getMaxConcurrency()` to read from configuration instead of hardcoding.
 
 ---
 
@@ -287,6 +446,31 @@ private void broadcast(String method, Object params) {
         }
     }
 }
+
+/** Agent 正在处理中 */
+private void broadcastTyping(String agentId) {
+    broadcast("typing", Map.of("agent_id", agentId));
+}
+
+/** Agent 处理完成 */
+private void broadcastTypingStop(String agentId) {
+    broadcast("typing.stop", Map.of("agent_id", agentId));
+}
+
+/** 心跳输出通知 */
+public void notifyHeartbeatOutput(String agentId, String text) {
+    broadcast("heartbeat.output", Map.of("agent_id", agentId, "text", text));
+}
+
+/** Cron 任务输出通知 */
+public void notifyCronOutput(String jobId, String agentId, String text) {
+    broadcast("cron.output", Map.of("job_id", jobId, "agent_id", agentId, "text", text));
+}
+
+/** 投递失败通知 */
+public void notifyDeliveryFailed(String deliveryId, String error) {
+    broadcast("delivery.failed", Map.of("delivery_id", deliveryId, "error", error));
+}
 ```
 
 ---
@@ -339,6 +523,24 @@ public class GatewayController {
     // 系统运维
     @GetMapping("/status")
     public ResponseEntity<?> getStatus() { ... }
+
+    // 会话创建
+    @PostMapping("/sessions")
+    public ResponseEntity<?> createSession(@RequestBody CreateSessionRequest request) { ... }
+
+    // 获取单个 Agent
+    @GetMapping("/agents/{id}")
+    public ResponseEntity<?> getAgent(@PathVariable String id) { ... }
+
+    // 投递队列查看
+    @GetMapping("/delivery/pending")
+    public ResponseEntity<?> getPendingDeliveries() { ... }
+
+    @GetMapping("/delivery/failed")
+    public ResponseEntity<?> getFailedDeliveries() { ... }
+
+    // WebSocket 通知端点 (内部调用)
+    // typing, heartbeat.output, cron.output 等通过 WebSocket 推送
 }
 ```
 
@@ -378,6 +580,9 @@ public class GlobalExceptionHandler {
 | `GatewayWebSocketHandlerTest` | 多客户端广播通知 | P1 |
 | `GatewayControllerTest` | REST API CRUD | P1 |
 | `GatewayIntegrationTest` | WS 连接 → 发消息 → 收回复 | P0 |
+| `AuthFilterTest` | DefaultAuthFilter 放行所有请求 | P1 |
+| `BindingStoreTest` | JSONL 加载/追加/全量重写 | P0 |
+| `AgentStoreTest` | JSONL 加载/注册/注销持久化 | P0 |
 
 ---
 
@@ -392,3 +597,12 @@ public class GlobalExceptionHandler {
 - [ ] REST API `POST /api/v1/send` 发送消息并收到回复
 - [ ] 多个 WebSocket 客户端可同时连接
 - [ ] 错误请求返回正确的 JSON-RPC 错误码
+- [ ] `AuthFilter` 接口 + `DefaultAuthFilter` 默认放行实现正确注册
+- [ ] 自定义 `AuthFilter` 实现可覆盖默认实现
+- [ ] `BindingStore` 启动时从 `bindings.jsonl` 恢复路由规则
+- [ ] `AgentStore` 启动时从 `agents.jsonl` 恢复 Agent 配置
+- [ ] 动态添加的绑定和 Agent 重启后不丢失
+- [ ] `POST /api/v1/sessions` 创建新会话端点可用
+- [ ] `GET /api/v1/agents/{id}` 获取单个 Agent 端点可用
+- [ ] WebSocket `typing` / `typing.stop` 通知正常推送
+- [ ] `heartbeat.output` / `cron.output` / `delivery.failed` 通知正常推送

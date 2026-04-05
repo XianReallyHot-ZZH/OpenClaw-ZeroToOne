@@ -243,6 +243,25 @@ flowchart TB
 - [ ] 循环依赖检测通过 (Spring 默认禁止)
 - [ ] 无 `UnsatisfiedDependencyException`
 
+### 版本验证清单
+
+在正式集成前，确认以下依赖版本可用：
+
+```bash
+# 检查 Maven Central 中的最新版本
+curl -s "https://search.maven.org/solrsearch/select?q=g:org.springframework.boot+AND+a:spring-boot-starter-parent&rows=5&wt=json" | jq '.response.docs[0].latestVersion'
+
+curl -s "https://search.maven.org/solrsearch/select?q=g:com.anthropic+AND+a:anthropic-java&rows=5&wt=json" | jq '.response.docs[0].latestVersion'
+```
+
+| 依赖 | 指定版本 | 验证结果 |
+|------|---------|---------|
+| Spring Boot | 3.5.3 | 待验证 |
+| Anthropic Java SDK | 2.20.0 | 待验证 |
+| cron-utils | 9.2.1 | 待验证 |
+
+> 如指定版本不存在，更新为最新稳定版并修改 `pom.xml`。
+
 ---
 
 ## 3. Day 54-55: E2E 测试
@@ -341,6 +360,52 @@ void shouldGracefullyShutdown() {
     assertNotNull(result);
 }
 ```
+
+## 3.5 安全测试
+
+### 安全测试清单
+
+```java
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+class SecurityTest {
+
+    @Test
+    void shouldAllowAllRequestsWithDefaultAuthFilter() {
+        // DefaultAuthFilter 放行所有请求
+        ResponseEntity<?> response = restTemplate.getForEntity("/api/v1/agents", Object.class);
+        assertEquals(200, response.getStatusCode().value());
+    }
+
+    @Test
+    void shouldRejectInvalidAgentId() {
+        // Agent ID 格式验证: [a-z0-9][a-z0-9_-]{0,63}
+        ResponseEntity<?> response = restTemplate.postForEntity("/api/v1/agents",
+            Map.of("id", "INVALID ID!", "name", "Bad"), Object.class);
+        assertEquals(400, response.getStatusCode().value());
+    }
+
+    @Test
+    void shouldBlockPathTraversal() {
+        // 路径穿越防护
+    }
+
+    @Test
+    void shouldBlockDangerousCommands() {
+        // 危险命令拦截
+    }
+}
+```
+
+### Rate Limiting 说明
+
+> 当前版本不实现内置速率限制。建议通过外部反向代理（如 Nginx）配置：
+> ```nginx
+> limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+> location /api/v1/ {
+>     limit_req zone=api burst=20 nodelay;
+> }
+> ```
+> 未来版本可集成 `spring-boot-starter-data-redis` + `Bucket4j` 实现分布式限流。
 
 ---
 
@@ -528,6 +593,61 @@ public class WorkspaceHealthIndicator extends AbstractHealthIndicator {
 }
 ```
 
+### 5.3 文件 7.11b — `WorkspaceHealthIndicator.java`
+
+> 注意：上方 5.2 节展示了 `WorkspaceHealthIndicator` 的代码，此处明确列出该文件为 Sprint 7 需创建的文件之一。
+
+**文件路径**: `src/main/java/com/claw4j/health/WorkspaceHealthIndicator.java`
+
+### 5.4 认证扩展文档
+
+**如何替换默认认证实现**:
+
+1. 创建自定义 AuthFilter 实现:
+```java
+@Component  // 不使用 @Primary，因为已有 DefaultAuthFilter 用 @Primary
+@Primary    // 覆盖默认的 DefaultAuthFilter
+public class ApiKeyAuthFilter implements AuthFilter {
+    @Value("${auth.api-key}") private String validApiKey;
+
+    @Override
+    public boolean allow(String token, String path) {
+        if (validApiKey == null || validApiKey.isBlank()) return true;  // 未配置则放行
+        return validApiKey.equals(token);
+    }
+}
+```
+
+2. REST API: 请求头 `X-API-Key: xxx`
+3. WebSocket: 连接时 query 参数 `?token=xxx`
+
+**application.yml 配置**:
+```yaml
+auth:
+  api-key: ${AUTH_API_KEY:}  # 留空则不启用认证
+```
+
+**Nginx 反向代理配置示例** (推荐生产环境使用):
+```nginx
+server {
+    listen 443 ssl;
+
+    location / {
+        proxy_pass http://localhost:8080;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /ws/ {
+        proxy_pass http://localhost:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
 ---
 
 ## 6. Day 60-61: 文档
@@ -575,10 +695,14 @@ public class WorkspaceHealthIndicator extends AbstractHealthIndicator {
 - [ ] 上下文溢出自动恢复
 - [ ] 多 Lane 并发隔离
 - [ ] SIGTERM 优雅关闭
+- [ ] 认证扩展点：默认放行，自定义实现可替换
+- [ ] 安全测试：Agent ID 验证、路径穿越拦截、危险命令拦截
 
 ### 质量验收
 - [ ] 测试覆盖率核心模块 ≥ 80%，整体 ≥ 70%
 - [ ] 所有测试通过 (`mvn test`)
+- [ ] 所有依赖版本在 Maven Central 可用
+- [ ] `SecurityTest` 安全测试通过
 - [ ] Actuator `/actuator/health` 返回 UP
 - [ ] Actuator `/actuator/metrics` 指标可见
 - [ ] 结构化日志正常输出

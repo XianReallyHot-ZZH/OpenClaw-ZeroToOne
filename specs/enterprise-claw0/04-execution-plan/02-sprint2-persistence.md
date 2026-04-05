@@ -65,11 +65,12 @@ public record TranscriptEvent(
     Object content,      // String 或 List<ContentBlock>
     String toolName,     // 仅 tool_use
     String toolId,       // 仅 tool_use / tool_result
+    Map<String, Object> input,  // 仅 tool_use — 工具调用参数 (历史重建必需)
     Instant timestamp
 ) {}
 ```
 
-**序列化注意**: Jackson 需要配置 `@JsonInclude(NON_NULL)` 以跳过 toolUse 场景中为 null 的字段。
+**序列化注意**: Jackson 需要配置 `@JsonInclude(NON_NULL)` 以跳过 toolUse 场景中为 null 的字段（包括 `toolName`, `toolId`, `input`）。
 
 ### 2.2 文件 2.2 — `SessionMeta.java`
 
@@ -126,6 +127,14 @@ public String createSession(String agentId, String label) {
 
     return sessionId;
 }
+```
+
+**sessionId → agentId 映射**: `appendTranscript()` 需要 `getAgentId(sessionId)` 获取 Agent 级别锁，
+但 `sessionId` (格式 `sess_{uuid}`) 不含 agentId 信息。需维护 `Map<String, String> sessionAgentMap`
+在 `createSession()` 时注册，在 `loadIndex()` 时重建。
+
+```java
+private final Map<String, String> sessionAgentMap = new ConcurrentHashMap<>();
 ```
 
 #### `appendTranscript(sessionId, event)` — 核心写入方法
@@ -263,9 +272,11 @@ flowchart TB
 ```java
 @Service
 public class ContextGuard {
-    private final int contextBudget;
     private final TokenEstimator tokenEstimator;
     private static final int MAX_COMPACT_ROUNDS = 3;
+
+    // Note: 不持有 AnthropicClient，通过参数传入
+    // 这样 Sprint 6 的 ResilienceRunner 可以为每个 Profile 注入不同的 client
 
     public Message guardApiCall(AnthropicClient client, MessageCreateParams params) {
         try {
@@ -287,6 +298,10 @@ public class ContextGuard {
     }
 }
 ```
+
+> **设计说明**: ContextGuard 不持有 AnthropicClient，而是通过方法参数传入。
+> 这使得 Sprint 6 的 ResilienceRunner 可以在轮转 Profile 时为每次调用注入不同的 client，
+> 而 ContextGuard 的溢出恢复逻辑无需关心当前使用的是哪个 Profile。
 
 #### Stage 2 — 截断工具结果
 
@@ -608,7 +623,7 @@ public class AgentLoop {
 
         // 2. 追加用户消息到 JSONL
         sessionStore.appendTranscript(sessionId,
-            new TranscriptEvent("user", "user", userMessage, null, null, Instant.now()));
+            new TranscriptEvent("user", "user", userMessage, null, null, null, Instant.now()));
 
         // 3. 添加用户消息到 API messages
         messages.add(MessageParam.builder()
@@ -621,7 +636,12 @@ public class AgentLoop {
 
         // 5. 持久化助手回复和工具调用
         sessionStore.appendTranscript(sessionId,
-            new TranscriptEvent("assistant", "assistant", result.text(), null, null, Instant.now()));
+            new TranscriptEvent("assistant", "assistant", result.text(), null, null, null, Instant.now()));
+
+        // For tool_use events:
+        sessionStore.appendTranscript(sessionId,
+            new TranscriptEvent("tool_use", "assistant", null, toolUse.name(), toolUse.id(),
+                (Map<String, Object>) toolUse.input(), Instant.now()));
 
         return result;
     }
@@ -638,6 +658,9 @@ public class AgentLoop {
 | `SessionStoreTest` | JSONL → MessageParam 重建 (含 tool_use 合并) | P0 |
 | `SessionStoreTest` | 并发写入安全性 (2 线程同时追加) | P1 |
 | `ContextGuardTest` | Stage 1 正常调用 | P0 |
+| `TranscriptEventSerializationTest` | JSONL 序列化/反序列化往返 (含 input 字段) | P0 |
+| `SessionStoreTest` | sessionId → agentId 映射正确维护 | P1 |
+| `ContextGuardTest` | 接受外部 client 参数执行调用 | P0 |
 | `ContextGuardTest` | Stage 2 截断工具结果后成功 | P0 |
 | `ContextGuardTest` | Stage 3 压缩后成功 | P1 |
 | `ContextGuardTest` | 3 次压缩后仍失败 → 抛异常 | P1 |
@@ -657,3 +680,7 @@ public class AgentLoop {
 - [ ] Telegram 渠道可收发 (需 Bot Token)
 - [ ] 重启后会话从 JSONL 恢复
 - [ ] 并发场景下 JSONL 文件不会损坏
+- [ ] TranscriptEvent 的 `input` 字段在 JSONL 中正确序列化和反序列化
+- [ ] ContextGuard 不持有自己的 AnthropicClient，通过方法参数传入
+- [ ] SessionStore 的 `sessionAgentMap` 正确维护 sessionId → agentId 映射
+- [ ] 启动后 `.sessions/` 目录结构正确创建

@@ -228,8 +228,8 @@ public record MemoryEntry(
     String content,
     String category,
     Instant timestamp,
-    String source,
-    double score
+    String source,       // "daily" or "evergreen"
+    double score          // 仅搜索结果时使用，存储时为 0.0
 ) {}
 ```
 
@@ -400,6 +400,17 @@ private List<MemoryEntry> mmrRerank(List<ScoredEntry> candidates, double lambda,
     return selected;
 }
 ```
+
+> **性能优化**: `hybridSearch()` 每次调用 `loadAllMemories()` 会重新读取所有 JSONL 文件并重新计算 TF-IDF。
+> 对于生产环境，建议在 Day 29 实现时增加启动预加载机制：
+> ```java
+> @PostConstruct
+> void preload() {
+>     this.allEntries = loadAllMemories();
+>     this.cachedDf = buildDocumentFrequency(allEntries);
+> }
+> ```
+> `writeMemory()` 时增量更新内存缓存，避免每次搜索重新加载。
 
 ---
 
@@ -574,6 +585,9 @@ MessageCreateParams params = MessageCreateParams.builder()
 | `MemoryStoreTest` | 混合检索分数合并 | P1 |
 | `MemoryStoreTest` | 时间衰减 | P1 |
 | `MemoryStoreTest` | MMR 重排去重 | P1 |
+| `MemoryStoreTest` | 大数据量测试: 插入 500+ 条记忆后搜索性能 (< 500ms) | P1 |
+| `MemoryStoreTest` | 启动预加载后搜索无需重新读文件 | P1 |
+| `MemoryStoreTest` | 写入时增量更新内存缓存 | P2 |
 | `PromptAssemblerTest` | 8 层完整组装 | P0 |
 | `PromptAssemblerTest` | 缺少文件时跳过对应层 | P1 |
 | `PromptAssemblerTest` | 各渠道 hint 不同 | P2 |
@@ -589,3 +603,6 @@ MessageCreateParams params = MessageCreateParams.builder()
 - [ ] `memory_write` 工具写入的条目可被 `memory_search` 检索到
 - [ ] Agent 展现 SOUL.md 中定义的人格特征
 - [ ] 缺少 workspace 文件时不崩溃，仅跳过对应层
+- [ ] MemoryStore 启动时预加载所有记忆到内存
+- [ ] 搜索时不重新读取 JSONL 文件（使用内存缓存）
+- [ ] 500+ 条记忆时搜索响应时间 < 500ms

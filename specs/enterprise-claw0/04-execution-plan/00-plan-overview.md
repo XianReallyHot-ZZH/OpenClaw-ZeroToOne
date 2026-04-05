@@ -58,17 +58,30 @@ com.openclaw.enterprise/
 │   ├── WebSocketConfig.java             # WebSocket 端点注册
 │   ├── SchedulingConfig.java            # 定时任务线程池配置
 │   └── AppProperties.java              # @ConfigurationProperties 集合
+├── common/                              # 公共工具 + 异常体系
+│   ├── JsonUtils.java
+│   ├── FileUtils.java
+│   ├── TokenEstimator.java
+│   └── exception/                       # 异常层级
+│       ├── Claw4jException.java         # 抽象基类
+│       ├── AgentException.java
+│       ├── ToolExecutionException.java
+│       ├── ContextOverflowException.java
+│       ├── ChannelException.java
+│       ├── DeliveryException.java
+│       ├── ProfileExhaustedException.java
+│       └── JsonRpcException.java        # JSON-RPC 协议错误
 ├── agent/                               # Agent 核心
 ├── tool/                                # 工具系统
 ├── session/                             # 会话持久化
 ├── channel/                             # 渠道抽象
-├── gateway/                             # 网关路由
+├── gateway/                             # 网关路由 + 认证
 ├── intelligence/                        # 智能层
 ├── scheduler/                           # 定时调度
 ├── delivery/                            # 可靠投递
 ├── resilience/                          # 韧性容错
 ├── concurrency/                         # 并发控制
-└── common/                              # 公共工具
+└── auth/                                # 认证扩展点
 ```
 
 ### 2.4 Spring Bean 命名约定
@@ -79,6 +92,7 @@ com.openclaw.enterprise/
 | `@Component` | `GracefulShutdownManager`, `CliChannel` | 基础设施组件 |
 | `@Configuration` | `AppConfig`, `AnthropicConfig` | 配置类 |
 | `@ConditionalOnProperty` | `TelegramChannel`, `FeishuChannel` | 按需注册 |
+| `@Primary` + `@ConditionalOnMissingBean` | `DefaultAuthFilter` | 可替换默认实现 |
 
 ---
 
@@ -116,14 +130,23 @@ com.openclaw.enterprise/
 | 1.24 | `agent/AgentLoop.java` | 服务 | s01+s02 agent_loop | 150 | 核心对话循环 |
 | 1.25 | `.env.example` | 配置 | .env.example | 25 | 环境变量模板 |
 | 1.26 | `workspace/` 目录 + 模板文件 | 资源 | workspace/ | — | 拷贝 claw0 workspace/ |
+| 1.27 | `common/Claw4jException.java` | 抽象类 | — | 20 | 业务异常基类 |
+| 1.28 | `common/exceptions/AgentException.java` | 异常 | — | 10 | Agent 未找到等 |
+| 1.29 | `common/exceptions/ToolExecutionException.java` | 异常 | — | 10 | 工具执行失败 |
+| 1.30 | `common/exceptions/ContextOverflowException.java` | 异常 | — | 10 | 上下文溢出不可恢复 |
+| 1.31 | `common/exceptions/ChannelException.java` | 异常 | — | 10 | 渠道通信失败 |
+| 1.32 | `common/exceptions/DeliveryException.java` | 异常 | — | 10 | 投递失败 |
+| 1.33 | `common/exceptions/ProfileExhaustedException.java` | 异常 | — | 10 | 所有 Profile 耗尽 |
+| 1.34 | `common/exceptions/JsonRpcException.java` | 异常 | — | 10 | JSON-RPC 协议错误 |
+| 1.35 | `agent/ToolCallRecord.java` | record | — | 10 | 工具调用记录 |
 
-**Sprint 1 小计: ~1,189 行**
+**Sprint 1 小计: ~1,299 行**
 
 ### 3.2 Sprint 2 — 持久化与渠道 (Day 10-19)
 
 | # | 文件路径 | 类型 | claw0 映射 | 预估行数 |
 |---|---------|------|-----------|---------|
-| 2.1 | `session/TranscriptEvent.java` | record | s03 event 格式 | 25 |
+| 2.1 | `session/TranscriptEvent.java` | record | s03 event 格式 | 30 | 含 input 字段 (tool_use 场景) |
 | 2.2 | `session/SessionMeta.java` | record | s03 SessionStore index | 20 |
 | 2.3 | `session/SessionStore.java` | 服务 | s03 SessionStore | 250 |
 | 2.4 | `session/ContextGuard.java` | 服务 | s03 ContextGuard | 150 |
@@ -139,17 +162,22 @@ com.openclaw.enterprise/
 
 ### 3.3 Sprint 3 — 网关与路由 (Day 20-26)
 
-| # | 文件路径 | 类型 | claw0 映射 | 预估行数 |
-|---|---------|------|-----------|---------|
-| 3.1 | `gateway/Binding.java` | record | s05 Binding | 20 |
-| 3.2 | `gateway/ResolvedBinding.java` | record | s05 resolve 结果 | 10 |
-| 3.3 | `gateway/BindingTable.java` | 服务 | s05 BindingTable | 120 |
-| 3.4 | `agent/AgentManager.java` | 服务 | s05 AgentManager | 100 |
-| 3.5 | `config/WebSocketConfig.java` | 配置 | s05 server setup | 30 |
-| 3.6 | `gateway/GatewayWebSocketHandler.java` | 组件 | s05 GatewayServer | 200 |
-| 3.7 | `gateway/GatewayController.java` | 控制器 | s05 REST 端点 | 120 |
+| # | 文件路径 | 类型 | claw0 映射 | 预估行数 | 说明 |
+|---|---------|------|-----------|---------|------|
+| 3.1 | `gateway/Binding.java` | record | s05 Binding | 20 | |
+| 3.2 | `gateway/ResolvedBinding.java` | record | s05 resolve 结果 | 10 | |
+| 3.3 | `gateway/BindingTable.java` | 服务 | s05 BindingTable | 120 | 含预排序优化 |
+| 3.4 | `agent/AgentManager.java` | 服务 | s05 AgentManager | 100 | |
+| 3.5 | `config/WebSocketConfig.java` | 配置 | s05 server setup | 30 | |
+| 3.6 | `gateway/GatewayWebSocketHandler.java` | 组件 | s05 GatewayServer | 220 | 含所有通知方法 |
+| 3.7 | `gateway/GatewayController.java` | 控制器 | s05 REST 端点 | 160 | 含全部 REST API |
+| 3.8 | `auth/AuthFilter.java` | 接口 | — | 15 | 认证扩展点接口 |
+| 3.9 | `auth/DefaultAuthFilter.java` | 组件 | — | 20 | 默认放行实现 (@Primary) |
+| 3.10 | `gateway/BindingStore.java` | 服务 | — | 80 | 路由规则 JSONL 持久化 |
+| 3.11 | `gateway/AgentStore.java` | 服务 | — | 70 | Agent 配置 JSONL 持久化 |
+| 3.12 | `config/ConcurrencyProperties.java` | record | — | 15 | Lane 并发配置 |
 
-**Sprint 3 小计: ~600 行**
+**Sprint 3 小计: ~860 行**
 
 ### 3.4 Sprint 4 — 智能层 (Day 27-34)
 

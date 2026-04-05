@@ -735,7 +735,184 @@ private static final ToolDefinition SCHEMA = new ToolDefinition(
 
 ---
 
-## 9. 验收检查清单 (M1)
+## 10. 异常体系
+
+### 10.1 文件 1.27 — `Claw4jException.java`
+
+```java
+/**
+ * 业务异常基类 — 所有 claw4j 自定义异常的父类
+ * 携带结构化错误信息，便于统一错误响应
+ */
+public abstract class Claw4jException extends RuntimeException {
+    private final String errorCode;
+
+    protected Claw4jException(String errorCode, String message) {
+        super(message);
+        this.errorCode = errorCode;
+    }
+
+    protected Claw4jException(String errorCode, String message, Throwable cause) {
+        super(message, cause);
+        this.errorCode = errorCode;
+    }
+
+    public String getErrorCode() { return errorCode; }
+}
+```
+
+### 10.2 异常子类文件 (1.28-1.34)
+
+**每个异常子类遵循统一模式**，放在 `common/exceptions/` 包下：
+
+```java
+// AgentException.java — Agent 相关错误 (未找到、已存在、ID 格式错误)
+public class AgentException extends Claw4jException {
+    private final String agentId;
+    public AgentException(String agentId, String message) {
+        super("AGENT_ERROR", message);
+        this.agentId = agentId;
+    }
+}
+
+// ToolExecutionException.java — 工具执行失败
+public class ToolExecutionException extends Claw4jException {
+    private final String toolName;
+    private final Map<String, Object> input;
+    public ToolExecutionException(String toolName, Map<String, Object> input, String message) {
+        super("TOOL_ERROR", message);
+        this.toolName = toolName;
+        this.input = input;
+    }
+}
+
+// ContextOverflowException.java — 上下文溢出不可恢复
+public class ContextOverflowException extends Claw4jException {
+    private final int estimatedTokens;
+    private final int budget;
+    public ContextOverflowException(int estimatedTokens, int budget) {
+        super("CONTEXT_OVERFLOW", "Context overflow after max compaction rounds: estimated=" + estimatedTokens + ", budget=" + budget);
+        this.estimatedTokens = estimatedTokens;
+        this.budget = budget;
+    }
+}
+
+// ChannelException.java — 渠道通信失败
+public class ChannelException extends Claw4jException {
+    private final String channelName;
+    public ChannelException(String channelName, String message, Throwable cause) {
+        super("CHANNEL_ERROR", message, cause);
+        this.channelName = channelName;
+    }
+}
+
+// DeliveryException.java — 投递失败
+public class DeliveryException extends Claw4jException {
+    private final String deliveryId;
+    public DeliveryException(String deliveryId, String message) {
+        super("DELIVERY_ERROR", message);
+        this.deliveryId = deliveryId;
+    }
+    public DeliveryException(String deliveryId, String message, Throwable cause) {
+        super("DELIVERY_ERROR", message, cause);
+        this.deliveryId = deliveryId;
+    }
+}
+
+// ProfileExhaustedException.java — 所有 Auth Profile 耗尽
+public class ProfileExhaustedException extends Claw4jException {
+    private final int profileCount;
+    public ProfileExhaustedException(String message) {
+        super("PROFILES_EXHAUSTED", message);
+        this.profileCount = 0;
+    }
+}
+
+// JsonRpcException.java — JSON-RPC 协议错误
+public class JsonRpcException extends RuntimeException {
+    private final int code;
+    public JsonRpcException(int code, String message) {
+        super(message);
+        this.code = code;
+    }
+    public int getCode() { return code; }
+}
+```
+
+> **注意**: `JsonRpcException` 继承 `RuntimeException` 而非 `Claw4jException`，因为它属于协议层错误，不是业务异常。
+
+### 10.3 文件 1.35 — `ToolCallRecord.java`
+
+```java
+/**
+ * 工具调用记录 — 记录一次工具调用的完整信息
+ * 被 AgentTurnResult 包含，也被 TranscriptEvent 的 tool_use 事件引用
+ */
+public record ToolCallRecord(
+    String toolName,        // 工具名称
+    String toolId,          // 工具调用 ID (tool_use_xxx)
+    Map<String, Object> input,   // 工具调用参数
+    String result           // 工具执行结果文本
+) {}
+```
+
+---
+
+## 11. 启动目录初始化
+
+应用启动时需要确保以下目录存在（在 `AppConfig.java` 的 `@PostConstruct` 中执行）：
+
+```java
+@Configuration
+public class AppConfig {
+    @PostConstruct
+    void ensureDirectories() {
+        Path ws = workspaceProps.path();
+        List.of(
+            ws.resolve(".sessions/agents"),
+            ws.resolve("memory/daily"),
+            ws.resolve("delivery-queue/pending"),
+            ws.resolve("delivery-queue/failed"),
+            ws.resolve("cron"),
+            ws.resolve("skills"),
+            ws.resolve("logs")
+        ).forEach(dir -> {
+            try { Files.createDirectories(dir); }
+            catch (IOException e) { throw new RuntimeException("Failed to create: " + dir, e); }
+        });
+    }
+}
+```
+
+---
+
+## 12. 已知风险与应对（更新）
+
+| 风险 | 应对 |
+|------|------|
+| Anthropic Java SDK API 不稳定 | Day 2 优先写验证测试，确认 `MessageCreateParams` / `ToolUseBlock` API |
+| SDK 类型系统与 Python SDK 不一致 | 准备降级方案：直接用 `HttpClient` 封装 REST API |
+| `MessageParam.content()` 类型复杂 | 打印实际返回类型，用 `instanceof` 模式匹配处理 |
+| `ToolResultBlock` 构建方式不确定 | 验证测试中覆盖 tool_use 循环场景 |
+| Spring Boot 3.5.x 版本不存在 | 先验证 Maven Central 中最新稳定版，降级到 3.4.x |
+| Anthropic SDK 2.20.0 版本不存在 | 检查 Maven Central，使用最新稳定版 |
+| cron-utils API 签名不确定 | Day 2 技术验证中确认 `nextExecution()` 方法 |
+
+---
+
+## 13. 补充测试清单
+
+在原有测试基础上，增加以下测试：
+
+| 测试类 | 测试内容 | 优先级 |
+|--------|---------|--------|
+| `Claw4jExceptionTest` | 各异常子类构造 + errorCode 正确 | P1 |
+| `ToolCallRecordTest` | record 构造与字段访问 | P2 |
+| `AppConfigTest` | 启动目录初始化（验证目录存在） | P1 |
+
+---
+
+## 14. 验收检查清单 (M1)
 
 启动验证命令:
 ```bash
@@ -751,14 +928,6 @@ mvn spring-boot:run
 - [ ] 工具调用正常：bash echo、文件读写
 - [ ] 路径穿越被拦截
 - [ ] 危险命令被拦截
-
----
-
-## 10. 已知风险与应对
-
-| 风险 | 应对 |
-|------|------|
-| Anthropic Java SDK API 不稳定 | Day 2 优先写验证测试，确认 `MessageCreateParams` / `ToolUseBlock` API |
-| SDK 类型系统与 Python SDK 不一致 | 准备降级方案：直接用 `HttpClient` 封装 REST API |
-| `MessageParam.content()` 类型复杂 | 打印实际返回类型，用 `instanceof` 模式匹配处理 |
-| `ToolResultBlock` 构建方式不确定 | 验证测试中覆盖 tool_use 循环场景 |
+- [ ] 异常体系完整：`Claw4jException` 及 6 个子类可正常抛出和捕获
+- [ ] `ToolCallRecord` record 正确使用在 `AgentTurnResult` 中
+- [ ] 启动后 workspace 子目录（.sessions/, memory/, delivery-queue/）自动创建
