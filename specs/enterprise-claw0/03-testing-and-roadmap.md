@@ -199,68 +199,70 @@ void shouldCompactHistoryOnOverflow() {
 
 ```mermaid
 gantt
-    title enterprise-claw-4j 实施路线图 (1人全职)
+    title enterprise-claw-4j 实施路线图
     dateFormat YYYY-MM-DD
     axisFormat %m/%d
 
-    section Sprint 1: 骨架与核心
-    项目骨架 + Maven 配置        :s1a, 2026-04-07, 1d
-    Anthropic SDK 验证原型       :s1b, after s1a, 1d
-    AgentLoop + AgentConfig      :s1c, after s1b, 2d
-    ToolHandler + ToolRegistry   :s1d, after s1c, 2d
-    内置工具 (bash/read/write/edit) :s1e, after s1d, 2d
-    Sprint 1 测试                :s1t, after s1e, 1d
+    section Sprint 1 - 骨架与核心
+    项目骨架与Maven配置           :s1a, 2026-04-07, 1d
+    Anthropic SDK验证原型         :s1b, after s1a, 1d
+    AgentLoop与AgentConfig        :s1c, after s1b, 2d
+    ToolHandler与ToolRegistry     :s1d, after s1c, 2d
+    内置工具实现                  :s1e, after s1d, 2d
+    Sprint 1 测试                 :s1t, after s1e, 1d
 
-    section Sprint 2: 持久化与渠道
-    SessionStore (JSONL)         :s2a, after s1t, 2d
-    ContextGuard (3 阶段)        :s2b, after s2a, 2d
-    Channel 接口 + CLI           :s2c, after s2b, 1d
-    TelegramChannel              :s2d, after s2c, 2d
-    FeishuChannel                :s2e, after s2d, 2d
-    Sprint 2 测试                :s2t, after s2e, 1d
+    section Sprint 2 - 持久化与渠道
+    SessionStore JSONL            :s2a, after s1t, 2d
+    ContextGuard三阶段            :s2b, after s2a, 2d
+    Channel接口与CLI              :s2c, after s2b, 1d
+    TelegramChannel               :s2d, after s2c, 2d
+    FeishuChannel                 :s2e, after s2d, 2d
+    Sprint 2 测试                 :s2t, after s2e, 1d
 
-    section Sprint 3: 网关与路由
-    BindingTable (5 级路由)      :s3a, after s2t, 2d
-    AgentManager                 :s3b, after s3a, 1d
-    GatewayWebSocketHandler      :s3c, after s3b, 2d
-    GatewayController (REST)     :s3d, after s3c, 1d
-    Sprint 3 测试                :s3t, after s3d, 1d
+    section Sprint 3 - 网关与路由
+    BindingTable五级路由          :s3a, after s2t, 2d
+    AgentManager                  :s3b, after s3a, 1d
+    GatewayWebSocketHandler       :s3c, after s3b, 2d
+    GatewayController REST        :s3d, after s3c, 1d
+    Sprint 3 测试                 :s3t, after s3d, 1d
 
-    section Sprint 4: 智能层
-    BootstrapLoader              :s4a, after s3t, 2d
-    SkillsManager                :s4b, after s4a, 1d
-    MemoryStore (TF-IDF + Vector) :s4c, after s4b, 3d
-    PromptAssembler (8 层)       :s4d, after s4c, 1d
-    Sprint 4 测试                :s4t, after s4d, 1d
+    section Sprint 4 - 智能层
+    BootstrapLoader               :s4a, after s3t, 2d
+    SkillsManager                 :s4b, after s4a, 1d
+    MemoryStore混合检索           :s4c, after s4b, 3d
+    PromptAssembler八层组装       :s4d, after s4c, 1d
+    Sprint 4 测试                 :s4t, after s4d, 1d
 
-    section Sprint 5: 自主与投递
-    HeartbeatService             :s5a, after s4t, 1d
-    CronJobService               :s5b, after s5a, 2d
-    DeliveryQueue (WAL)          :s5c, after s5b, 2d
-    DeliveryRunner + Chunker     :s5d, after s5c, 2d
-    Sprint 5 测试                :s5t, after s5d, 1d
+    section Sprint 5 - 自主与投递
+    HeartbeatService              :s5a, after s4t, 1d
+    CronJobService                :s5b, after s5a, 2d
+    DeliveryQueue WAL             :s5c, after s5b, 2d
+    DeliveryRunner与Chunker       :s5d, after s5c, 2d
+    Sprint 5 测试                 :s5t, after s5d, 1d
 
-    section Sprint 6: 韧性与并发
-    ProfileManager               :s6a, after s5t, 1d
-    ResilienceRunner (3 层洋葱)  :s6b, after s6a, 3d
-    LaneQueue (虚拟线程)         :s6c, after s6b, 2d
-    CommandQueue                 :s6d, after s6c, 1d
-    Sprint 6 测试                :s6t, after s6d, 2d
+    section Sprint 6 - 韧性与并发
+    ProfileManager                :s6a, after s5t, 1d
+    ResilienceRunner三层洋葱      :s6b, after s6a, 3d
+    LaneQueue虚拟线程             :s6c, after s6b, 2d
+    CommandQueue                  :s6d, after s6c, 1d
+    Sprint 6 测试                 :s6t, after s6d, 2d
 
-    section Sprint 7: 集成与交付
-    全模块集成                   :s7a, after s6t, 2d
-    E2E 测试                     :s7b, after s7a, 2d
-    配置优化 + Actuator          :s7c, after s7b, 1d
-    文档收尾                     :s7d, after s7c, 2d
+    section Sprint 7 - 集成与交付
+    全模块集成                    :s7a, after s6t, 2d
+    E2E测试                       :s7b, after s7a, 2d
+    Docker与K8s部署配置           :s7c, after s7b, 2d
+    优雅关闭实现与测试            :s7d, after s7c, 1d
+    配置优化与Actuator            :s7e, after s7d, 1d
+    文档收尾                      :s7f, after s7e, 2d
 
     section 里程碑
-    M1: 能跑通基本对话            :milestone, m1, after s1t, 0d
-    M2: 能持久化 + 多渠道         :milestone, m2, after s2t, 0d
-    M3: 能路由 + WebSocket        :milestone, m3, after s3t, 0d
-    M4: 有智能体人格              :milestone, m4, after s4t, 0d
-    M5: 能自主运行                :milestone, m5, after s5t, 0d
-    M6: 生产就绪                  :milestone, m6, after s6t, 0d
-    M7: 交付                      :milestone, m7, after s7d, 0d
+    M1 能跑通基本对话             :milestone, m1, after s1t, 0d
+    M2 能持久化与多渠道           :milestone, m2, after s2t, 0d
+    M3 能路由与WebSocket          :milestone, m3, after s3t, 0d
+    M4 有智能体人格               :milestone, m4, after s4t, 0d
+    M5 能自主运行                 :milestone, m5, after s5t, 0d
+    M6 生产就绪                   :milestone, m6, after s6t, 0d
+    M7 交付                       :milestone, m7, after s7f, 0d
 ```
 
 ### 2.2 总工时估算
@@ -273,8 +275,8 @@ gantt
 | Sprint 4: 智能层 | 8 | 34 | BootstrapLoader, SkillsManager, MemoryStore |
 | Sprint 5: 自主与投递 | 8 | 42 | HeartbeatService, CronJobService, DeliveryQueue |
 | Sprint 6: 韧性与并发 | 9 | 51 | ResilienceRunner, LaneQueue, CommandQueue |
-| Sprint 7: 集成与交付 | 7 | 58 | E2E 测试, 文档, 配置优化 |
-| **总计** | **~58 人天 (约 12 周)** | — | — |
+| Sprint 7: 集成与交付 | 10 | 61 | E2E 测试, Docker/K8s, 优雅关闭, 文档 |
+| **总计** | **~61 人天（约 12~13 周）** | — | — |
 
 ---
 
@@ -452,9 +454,9 @@ flowchart LR
 
 ---
 
-### 3.7 Sprint 7: 集成与交付 (Day 52-58)
+### 3.7 Sprint 7: 集成与交付 (Day 52-61)
 
-**目标**: 全系统集成验证，文档收尾
+**目标**: 全系统集成验证，Docker 部署，文档收尾
 
 **交付清单**:
 
@@ -462,13 +464,18 @@ flowchart LR
 |------|------|
 | 全模块集成 — 各模块拼装为完整系统 | 2d |
 | E2E 测试 — 完整对话流程、多渠道、心跳、Cron | 2d |
-| Actuator 配置优化、健康检查自定义 | 1d |
+| Dockerfile 多阶段构建、docker-compose、K8s 探针配置 | 2d |
+| GracefulShutdownManager 实现与测试 | 1d |
+| Actuator 配置优化、自定义 HealthIndicator | 1d |
 | 文档：README、部署指南、配置说明 | 2d |
 
 **验收标准 (里程碑 M7: 交付)**:
 - [ ] 全部测试通过（单元 + 集成 + E2E）
 - [ ] `mvn package` 生成可运行的 Fat JAR
-- [ ] README 包含快速启动指南
+- [ ] `docker build` 生成可运行的容器镜像
+- [ ] `docker-compose up` 一键启动
+- [ ] SIGTERM 优雅关闭：进行中的对话完成后退出
+- [ ] README 包含快速启动指南（JAR + Docker 两种方式）
 - [ ] Actuator 健康检查正常
 - [ ] 所有渠道端到端可用
 
@@ -553,10 +560,11 @@ flowchart TB
 ### 5.3 最终交付清单
 
 - [ ] 可运行的 Spring Boot Fat JAR
+- [ ] 可构建的 Docker 镜像 + docker-compose 配置
 - [ ] 完整的 `application.yml` 配置模板
 - [ ] `.env.example` 环境变量模板
 - [ ] `workspace/` 目录 + 所有模板文件
-- [ ] README.md (快速启动 + 配置说明)
+- [ ] README.md (快速启动: JAR + Docker 两种方式)
 - [ ] API 文档 (REST + WebSocket)
 - [ ] 测试报告 (覆盖率 + 通过率)
 
@@ -572,7 +580,7 @@ flowchart LR
     M4["M4: 智能\nDay 34\n人格 + 记忆 + 技能"] -->
     M5["M5: 自主\nDay 42\n心跳 + Cron + 投递"] -->
     M6["M6: 生产就绪\nDay 51\n韧性 + 并发"] -->
-    M7["M7: 交付\nDay 58\nE2E + 文档"]
+    M7["M7: 交付\nDay 61\nE2E + Docker + 文档"]
 
     style M1 fill:#c8e6c9,stroke:#388e3c
     style M2 fill:#bbdefb,stroke:#1976d2
@@ -593,4 +601,4 @@ flowchart LR
 | **M4** | 8 层提示词正确组装、记忆检索有效 | TF-IDF 精度不足 → 考虑引入 Lucene |
 | **M5** | 心跳定时触发、Cron 任务执行、WAL 崩溃安全 | 原子写入在目标 OS 不支持 → 使用文件锁替代 |
 | **M6** | Auth 轮转正常、FIFO 保证、Generation 安全 | 死锁出现 → 增加超时和诊断日志 |
-| **M7** | 全部测试通过、文档完整、JAR 可独立运行 | 覆盖率 < 60% → 延长测试阶段 |
+| **M7** | 全部测试通过、文档完整、JAR 和 Docker 镜像可独立运行、优雅关闭正常 | 覆盖率 < 60% → 延长测试阶段 |

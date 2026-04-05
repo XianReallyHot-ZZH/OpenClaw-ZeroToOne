@@ -2,8 +2,9 @@
 
 > **项目名称**: enterprise-claw-4j  
 > **项目定位**: 基于 Spring Boot 的生产级 AI Agent 网关  
-> **源项目**: claw0 (~7,400 行 Python) — 渐进式 AI Agent 网关教学项目  
-> **目标语言**: Java 21 (LTS) + Spring Boot 3.4  
+> **源项目**: claw0 (~7,400 行 Python) — 渐进式 AI Agent 网关教学项目
+> **源项目路径**: @vendors/claw0  
+> **目标语言**: Java 21 (LTS) + Spring Boot 3.5  
 > **构建工具**: Maven  
 > **存储方案**: 文件系统 (JSONL)  
 > **代码风格**: 注释以中文为主，日志以英文为主
@@ -78,7 +79,7 @@ mindmap
 flowchart TB
     subgraph "运行时"
         JDK["Java 21 LTS"]
-        SB["Spring Boot 3.4.x"]
+        SB["Spring Boot 3.5.x"]
     end
 
     subgraph "核心依赖"
@@ -166,15 +167,15 @@ flowchart TB
 <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.4.4</version>
+    <version>3.5.3</version>
 </parent>
 
 <properties>
     <java.version>21</java.version>
-    <anthropic-sdk.version>1.2.0</anthropic-sdk.version>
-    <dotenv.version>3.0.0</dotenv.version>
+    <anthropic-sdk.version>2.20.0</anthropic-sdk.version>
+    <dotenv.version>3.2.0</dotenv.version>
     <cron-utils.version>9.2.1</cron-utils.version>
-    <awaitility.version>4.2.0</awaitility.version>
+    <awaitility.version>4.3.0</awaitility.version>
 </properties>
 ```
 
@@ -186,16 +187,16 @@ flowchart TB
 | | `spring-boot-starter-websocket` | (BOM) | WebSocket 网关 | `websockets` |
 | | `spring-boot-starter-actuator` | (BOM) | 健康检查 + 指标 | — |
 | | `spring-retry` | (BOM) | 重试注解 | 手写重试 |
-| **AI** | `anthropic-java` | 1.2.x | Claude API 客户端 | `anthropic` |
+| **AI** | `anthropic-java` | 2.20.x | Claude API 客户端（底层依赖 OkHttp） | `anthropic` |
 | **JSON** | `jackson-databind` | (BOM) | JSON 序列化 | 内置 `json` |
 | | `jackson-dataformat-yaml` | (BOM) | YAML frontmatter 解析 | — |
-| **配置** | `dotenv-java` | 3.0.0 | `.env` 文件加载 | `python-dotenv` |
+| **配置** | `dotenv-java` | 3.2.0 | `.env` 文件加载 | `python-dotenv` |
 | **调度** | `cron-utils` | 9.2.1 | Cron 表达式解析 | `croniter` |
 | **日志** | `logback-classic` | (BOM) | 结构化日志 | `print()` |
 | **指标** | `micrometer-core` | (BOM) | 运行时指标 | — |
 | **HTTP** | `java.net.http.HttpClient` | (JDK) | Telegram/飞书 HTTP | `httpx` |
 | **测试** | `spring-boot-starter-test` | (BOM) | 测试框架 | — |
-| | `awaitility` | 4.2.0 | 异步测试断言 | — |
+| | `awaitility` | 4.3.0 | 异步测试断言 | — |
 
 ### 3.3 Maven 依赖配置
 
@@ -221,6 +222,10 @@ flowchart TB
     <dependency>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-aop</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-validation</artifactId>
     </dependency>
 
     <!-- ===== AI SDK ===== -->
@@ -272,6 +277,8 @@ flowchart TB
 ```
 enterprise-claw-4j/
 ├── pom.xml
+├── Dockerfile                            # 多阶段 Docker 构建
+├── .dockerignore
 ├── .env.example                          # 环境变量模板
 ├── src/
 │   ├── main/
@@ -333,7 +340,7 @@ enterprise-claw-4j/
 │   │   │   ├── scheduler/                # ──── 定时调度 ────
 │   │   │   │   ├── HeartbeatService.java           # 心跳服务
 │   │   │   │   ├── CronJobService.java             # Cron 任务调度
-│   │   │   │   └── CronJob.java                    # Cron 任务定义 (record)
+│   │   │   │   └── CronJob.java                    # Cron 任务定义 (mutable)
 │   │   │   │
 │   │   │   ├── delivery/                 # ──── 可靠投递 ────
 │   │   │   │   ├── DeliveryQueue.java              # Write-Ahead 磁盘队列
@@ -667,6 +674,11 @@ spring:
   threads:
     virtual:
       enabled: true                    # 启用虚拟线程
+  lifecycle:
+    timeout-per-shutdown-phase: 30s    # 优雅关闭超时
+
+server:
+  shutdown: graceful                   # 启用优雅关闭
 
 # ===== Anthropic 配置 =====
 anthropic:

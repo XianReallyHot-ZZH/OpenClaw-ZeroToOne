@@ -12,6 +12,8 @@
 4. [核心数据模型](#4-核心数据模型)
 5. [错误处理规范](#5-错误处理规范)
 6. [配置文件格式](#6-配置文件格式)
+7. [Docker 部署](#7-docker-部署)
+8. [优雅关闭流程](#8-优雅关闭流程)
 
 ---
 
@@ -898,3 +900,136 @@ SERVER_PORT=8080
 | `claw4j.lane.queued` | Gauge | `lane` | Lane 排队任务数 |
 | `claw4j.context.overflow` | Counter | `agent_id`, `stage` | 上下文溢出触发次数 |
 | `claw4j.profile.failover` | Counter | `profile`, `reason` | Profile 故障转移次数 |
+
+---
+
+## 7. Docker 部署
+
+### 7.1 Dockerfile（多阶段构建）
+
+```dockerfile
+# ===== 构建阶段 =====
+FROM eclipse-temurin:21-jdk-alpine AS builder
+WORKDIR /build
+COPY pom.xml .
+COPY src ./src
+RUN apk add --no-cache maven && \
+    mvn package -DskipTests -q
+
+# ===== 运行阶段 =====
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+
+# 创建非 root 用户
+RUN addgroup -S claw4j && adduser -S claw4j -G claw4j
+
+COPY --from=builder /build/target/*.jar app.jar
+COPY workspace/ /app/workspace/
+
+# workspace 目录需要写权限（会话、投递队列、记忆等）
+RUN chown -R claw4j:claw4j /app
+USER claw4j
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+### 7.2 docker-compose.yml 示例
+
+```yaml
+version: "3.9"
+services:
+  claw4j:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./workspace:/app/workspace         # 外部挂载 workspace
+      - claw4j-data:/app/workspace/.sessions  # 持久化会话数据
+    env_file:
+      - .env
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+    restart: unless-stopped
+
+volumes:
+  claw4j-data:
+```
+
+### 7.3 K8s 探针配置
+
+```yaml
+# 在 Deployment spec 中
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8080
+  initialDelaySeconds: 15
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 5
+```
+
+对应 `application-prod.yml` 配置：
+
+```yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true                  # 启用 liveness/readiness 分组
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+```
+
+---
+
+## 8. 优雅关闭流程
+
+```mermaid
+sequenceDiagram
+    participant OS as OS Signal (SIGTERM)
+    participant SB as Spring Boot
+    participant GM as GracefulShutdownManager
+    participant CM as ChannelManager
+    participant CQ as CommandQueue
+    participant DR as DeliveryRunner
+    participant WS as WebSocket Sessions
+
+    OS->>SB: SIGTERM
+    SB->>SB: server.shutdown=graceful 停止接收新 HTTP 请求
+    SB->>GM: SmartLifecycle.stop()
+
+    GM->>CM: stopReceiving() 停止 Channel 轮询
+    GM->>WS: 广播关闭通知
+    GM->>CQ: waitForAll(30s) 等待进行中的任务完成
+
+    alt 30s 内任务完成
+        CQ-->>GM: 全部完成
+    else 超时
+        CQ-->>GM: 超时，放弃等待
+    end
+
+    GM->>DR: flush() 处理剩余投递
+    GM->>CM: closeAll() 关闭所有渠道连接
+    GM->>SB: callback.run() 通知 Spring 可以关闭
+
+    SB->>SB: 销毁 Bean、关闭连接池
+```
+
+**关键保证**：
+- 进行中的 Agent 对话回合会完成（最多等待 30 秒）
+- 已入队但未发送的消息持久化在磁盘 WAL 中，重启后自动恢复
+- WebSocket 客户端收到关闭通知，可以重连

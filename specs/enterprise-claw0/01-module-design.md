@@ -94,6 +94,14 @@ classDiagram
  * Agent 对话循环 — 系统核心
  * 每次调用 runTurn() 代表一个完整的用户-助手对话回合。
  * 内含工具使用的内层循环：当 stop_reason == "tool_use" 时持续处理。
+ *
+ * 注意: Anthropic Java SDK (v2.20.0) 底层使用 OkHttp。
+ * 客户端通过 AnthropicOkHttpClient 构建：
+ *   AnthropicClient client = AnthropicOkHttpClient.builder()
+ *       .apiKey(apiKey)
+ *       .build();
+ * 或通过环境变量自动配置：
+ *   AnthropicClient client = AnthropicOkHttpClient.fromEnv();
  */
 @Service
 public class AgentLoop {
@@ -212,7 +220,14 @@ classDiagram
 ```java
 /**
  * 工具处理器接口 — 所有工具实现此接口
- * 通过 Spring 组件扫描自动注册到 ToolRegistry
+ * 实现类标注 @Component 后，通过 Spring 自动注入注册到 ToolRegistry：
+ *
+ *   @Service
+ *   public class ToolRegistry {
+ *       public ToolRegistry(List<ToolHandler> handlers) {
+ *           handlers.forEach(h -> this.handlers.put(h.getName(), h));
+ *       }
+ *   }
  */
 public interface ToolHandler {
     /** 工具名称，与 Claude API 的 tool_name 对应 */
@@ -295,6 +310,8 @@ classDiagram
     SessionStore --> SessionMeta
     SessionStore --> TranscriptEvent
 ```
+
+> **并发安全**: 多个 Lane（main、cron、heartbeat）可能同时操作同一 Agent 的会话。`SessionStore` 使用 Agent 级别的 `ReentrantLock`（`ConcurrentHashMap<String, ReentrantLock>`）保护写操作，确保同一 Agent 的 JSONL 追加写入是串行化的。
 
 ### 3.2 JSONL 事件格式
 
@@ -440,7 +457,7 @@ classDiagram
 | **文本合并** | — | 1s 内连续消息合并 | — |
 | **认证** | — | Bot Token | OAuth tenant_access_token (自动刷新) |
 | **@检测** | — | — | Bot mention 检测 |
-| **Spring 集成** | `@ConditionalOnProperty` 始终启用 | `@ConditionalOnProperty(channels.telegram.enabled)` | `@ConditionalOnProperty(channels.feishu.enabled)` |
+| **Spring 集成** | 无条件注册（始终可用） | `@ConditionalOnProperty(channels.telegram.enabled)` | `@ConditionalOnProperty(channels.feishu.enabled)` |
 
 ### 4.3 Telegram 长轮询实现
 
@@ -832,7 +849,6 @@ classDiagram
     }
 
     class CronJob {
-        <<record>>
         +id: String
         +label: String
         +schedule: CronSchedule
@@ -841,6 +857,8 @@ classDiagram
         +errorCount: int
         +lastRunAt: Instant
         +deleteAfterRun: boolean
+        +incrementError() void
+        +markRun(now: Instant) void
     }
 
     class CronSchedule {
@@ -1052,6 +1070,8 @@ classDiagram
         +lastGoodAt: Instant
         +createClient() AnthropicClient
     }
+
+    note for AuthProfile "使用 AnthropicOkHttpClient.builder()\n.apiKey(apiKey).build()"
 
     class FailoverReason {
         <<sealed interface>>
@@ -1382,6 +1402,34 @@ public record DeliveryProperties(
 })
 public class AppConfig {
     // Bean 定义...
+}
+```
+
+### 11.3 优雅关闭
+
+```java
+/**
+ * 实现 SmartLifecycle，在 Spring 容器关闭时：
+ * 1. 停止接收新的入站消息（关闭 Channel 轮询）
+ * 2. 等待进行中的 Agent 对话回合完成（CommandQueue.waitForAll）
+ * 3. 处理剩余的投递队列（DeliveryRunner flush）
+ * 4. 关闭所有 Channel 连接
+ */
+@Component
+public class GracefulShutdownManager implements SmartLifecycle {
+
+    private final CommandQueue commandQueue;
+    private final ChannelManager channelManager;
+    private final DeliveryRunner deliveryRunner;
+
+    @Override
+    public void stop(Runnable callback) {
+        channelManager.stopReceiving();
+        commandQueue.waitForAll(Duration.ofSeconds(30));
+        deliveryRunner.flush();
+        channelManager.closeAll();
+        callback.run();
+    }
 }
 ```
 
