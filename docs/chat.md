@@ -27,9 +27,15 @@ git submodule add https://github.com/shareAI-lab/claw0 vendors/claw0
 
 检视 @specs/light-claw0-java-rewrite-plan.md 文档，要求 java 版本为 21，其他依赖的版本都调整为最新的版本，然后论证方案的可行性，详细检视方案还有没有欠缺，还有没有没考虑的地方，还有没有可以优化的地方。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
 
+详细检视 @specs/enterprise-claw0 目录下的文档，要求 java 版本为 21，其他依赖的版本都调整为最新的版本，然后论证方案的可行性，详细检视方案还有没有欠缺，还有没有没考虑的地方，还有没有可以优化的地方。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+
+
 # 编码执行计划
 
 根据 @specs/light-claw0-java-rewrite-plan.md 撰写一份详细的、可实施的、可落地的、规划合理的编码执行计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+
+根据 @specs/enterprise-claw0 目录下的方案文档, 撰写一份详细的、可实施的、可落地的、规划合理的编码执行计划，如需图表，使用 mermaid chart，文档放在 @specs/enterprise-claw0 目录下。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+
 
 # 项目执行
 文件清单：
