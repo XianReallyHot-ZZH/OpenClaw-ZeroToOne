@@ -55,23 +55,50 @@ flowchart TB
 ```java
 public sealed interface FailoverReason {
 
-    /** 分类失败原因 */
+    /** 分类失败原因 — 多层检测策略 */
     static FailoverReason classify(Exception ex) {
-        String msg = ex.getMessage() != null ? ex.getMessage().toLowerCase() : "";
-        int status = extractHttpStatus(ex);
+        // 优先级 1: SDK 异常类型匹配
+        // Anthropic Java SDK 可能定义了特定异常类 (需在 Sprint 1 SDK 验证中确认)
+        // 例如: BadRequestException, RateLimitException, AuthenticationException
 
+        // 优先级 2: HTTP 状态码检测
+        int status = extractHttpStatus(ex);
         if (status == 429) return new RateLimit();
         if (status == 401 || status == 403) return new AuthError();
+
+        // 优先级 3: 异常消息文本匹配 (降级方案)
+        String msg = ex.getMessage() != null ? ex.getMessage().toLowerCase() : "";
         if (msg.contains("timeout") || msg.contains("timed out")) return new Timeout();
         if (msg.contains("billing") || msg.contains("credit")) return new Billing();
-        if (msg.contains("context") && msg.contains("overflow")) return new ContextOverflow();
+
+        // 上下文溢出检测: 检查 HTTP 400 + 错误体中的 type 字段
+        if (status == 400 && (msg.contains("context") || msg.contains("too many tokens")
+                || msg.contains("max_tokens_exceeded"))) {
+            return new ContextOverflow();
+        }
+
         return new Unknown();
     }
 
     private static int extractHttpStatus(Exception ex) {
         // Anthropic SDK 异常通常包含 HTTP 状态码
+        // 方案 1: 异常类继承层级检查 (SDK 特定异常类)
+        // 方案 2: 反射获取 statusCode() 方法
+        // 方案 3: 异常消息中提取数字 (如 "HTTP 429")
         // 具体取法需在 Sprint 1 SDK 验证中确认
-        return 0;
+        try {
+            var method = ex.getClass().getMethod("statusCode");
+            return (int) method.invoke(ex);
+        } catch (Exception ignored) {
+            // 尝试从消息中提取
+            String msg = ex.getMessage();
+            if (msg != null) {
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\\b(4\\d{2}|5\\d{2})\\b").matcher(msg);
+                if (m.find()) return Integer.parseInt(m.group(1));
+            }
+            return 0;
+        }
     }
 
     // === 具体类型 ===
@@ -111,6 +138,10 @@ public sealed interface FailoverReason {
 ### 2.2 文件 6.2 — `AuthProfile.java`
 
 **claw0 参考**: `s09_resilience.py` 第 80-150 行 `AuthProfile` 类
+
+> **⚠️ 类型说明**: `AuthProfile` 是 `class` 而非 `record`，因为它持有 `volatile` 可变状态
+> (`cooldownUntil`, `failureReason`, `lastGoodAt`)。record 是不可变的，不适用于此场景。
+> 00-overview.md 目录树中的 `record` 标注为历史遗留错误，以本文件为准。
 
 ```java
 public class AuthProfile {

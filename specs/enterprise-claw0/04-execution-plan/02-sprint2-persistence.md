@@ -193,6 +193,7 @@ private List<MessageParam> rebuildHistory(List<TranscriptEvent> events) {
             case "tool_use" -> {
                 // tool_use 是 assistant 消息的一部分
                 // 如果上一条已经是 assistant，合并；否则创建新的
+                // 关键：必须使用 event.input() 重建 ToolUseBlock
                 appendToolUseToLastAssistant(messages, event);
             }
 
@@ -240,6 +241,42 @@ flowchart LR
 ```
 
 **处理策略**: 维护一个 "pending assistant builder"，连续的 `assistant` + `tool_use` 事件合并到同一个 MessageParam 中，遇到 `user` 或 `tool_result` 时 flush。
+
+**`appendToolUseToLastAssistant()` 实现要点**:
+
+```java
+private void appendToolUseToLastAssistant(List<MessageParam> messages, TranscriptEvent event) {
+    // 构建 ToolUseBlock — 注意必须包含 input 字段
+    ToolUseBlock toolUseBlock = ToolUseBlock.builder()
+        .id(event.toolId())
+        .name(event.toolName())
+        .input(event.input())  // ← 从 JSONL 恢复的工具调用参数
+        .build();
+
+    // 如果上一条是 assistant 消息，合并 ToolUseBlock
+    if (!messages.isEmpty()) {
+        MessageParam last = messages.get(messages.size() - 1);
+        if (last.role() == Role.ASSISTANT) {
+            // 追加 ToolUseBlock 到现有 assistant 消息的 content 列表
+            List<ContentBlock> merged = new ArrayList<>(last.content());
+            merged.add(toolUseBlock);
+            messages.set(messages.size() - 1, MessageParam.builder()
+                .role(Role.ASSISTANT)
+                .content(merged)
+                .build());
+            return;
+        }
+    }
+    // 否则创建新的 assistant 消息
+    messages.add(MessageParam.builder()
+        .role(Role.ASSISTANT)
+        .content(List.of(toolUseBlock))
+        .build());
+}
+```
+
+> **⚠️ 关键**: `event.input()` 不可为 null，否则 Claude API 会因缺少 `input` 字段拒绝请求。
+> `TranscriptEvent` 的 `tool_use` 类型事件**必须**在序列化时包含 `input` 字段。
 
 ---
 
@@ -600,9 +637,43 @@ sequenceDiagram
 ```
 
 **飞书渠道特点**:
-- **消息接收**: Webhook 回调 (需要 Spring MVC Controller 端点接收 POST)
+- **消息接收**: Webhook 回调 (通过 `FeishuWebhookController` 端点接收 POST)
 - **@提及检测**: 解析消息中的 `mentions` 数组
 - **内容类型**: text (纯文本), post (富文本), image (图片)
+
+### 6.2 文件 2.12 — `FeishuWebhookController.java`
+
+**说明**: 飞书使用 Webhook 回调方式推送消息，需要一个独立的 REST Controller 来接收。
+
+```java
+@RestController
+@ConditionalOnProperty(name = "channels.feishu.enabled", havingValue = "true")
+@RequestMapping("/webhook/feishu")
+public class FeishuWebhookController {
+    private final FeishuChannel feishuChannel;
+
+    @PostMapping
+    public ResponseEntity<?> handleEvent(@RequestBody JsonNode event) {
+        // 1. 验证请求签名 (可选)
+        // 2. 处理 URL 验证挑战 (飞书首次注册 Webhook 时的 challenge)
+        if (event.has("challenge")) {
+            return ResponseEntity.ok(Map.of("challenge", event.get("challenge").asText()));
+        }
+        // 3. 解析消息事件，转为 InboundMessage
+        InboundMessage inbound = feishuChannel.parseWebhookEvent(event);
+        if (inbound != null) {
+            feishuChannel.pushMessage(inbound);  // 放入内部队列
+        }
+        return ResponseEntity.ok().build();
+    }
+}
+```
+
+> **与 `Channel.receive()` 的适配**: 飞书是**推送模式**（Webhook），不是拉取模式。
+> `FeishuChannel` 内部维护一个 `BlockingQueue<InboundMessage>`：
+> - `FeishuWebhookController` 通过 `pushMessage()` 将消息放入队列
+> - `MessagePumpService` 通过 `receive()` 从队列中取出消息
+> 这样 Webhook 推送模式与 `Channel.receive()` 的轮询接口完美适配。
 
 ---
 

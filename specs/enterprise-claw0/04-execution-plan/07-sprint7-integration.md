@@ -245,7 +245,8 @@ flowchart TB
 
 ### 版本验证清单
 
-在正式集成前，确认以下依赖版本可用：
+> **注意**: 版本验证应在 Sprint 1 Day 1 第一步完成（参见 01-sprint1-skeleton.md §2 的版本验证说明）。
+> 此处仅为最终集成前的二次确认。
 
 ```bash
 # 检查 Maven Central 中的最新版本
@@ -261,6 +262,18 @@ curl -s "https://search.maven.org/solrsearch/select?q=g:com.anthropic+AND+a:anth
 | cron-utils | 9.2.1 | 待验证 |
 
 > 如指定版本不存在，更新为最新稳定版并修改 `pom.xml`。
+>
+> **⚠️ logstash-logback-encoder 依赖**: 生产环境的 `logback-spring.xml` 使用了 `LogstashEncoder`
+> (`net.logstash.logback.encoder.LogstashEncoder`)，需要在 `pom.xml` 中添加以下依赖：
+> ```xml
+> <dependency>
+>     <groupId>net.logstash.logback</groupId>
+>     <artifactId>logstash-logback-encoder</artifactId>
+>     <version>8.0</version>
+>     <scope>runtime</scope>
+> </dependency>
+> ```
+> 版本号以 Maven Central 最新稳定版为准。
 
 ---
 
@@ -417,10 +430,16 @@ class SecurityTest {
 # ===== 构建阶段 =====
 FROM eclipse-temurin:21-jdk-alpine AS builder
 WORKDIR /build
+
+# 利用 Docker 层缓存：先复制 pom.xml 并下载依赖
+# 只有 pom.xml 变化时才重新下载，源码变化不会触发依赖重下载
 COPY pom.xml .
-COPY src ./src
 RUN apk add --no-cache maven && \
-    mvn package -DskipTests -q
+    mvn dependency:go-offline -q
+
+# 再复制源码并编译
+COPY src ./src
+RUN mvn package -DskipTests -q -o
 
 # ===== 运行阶段 =====
 FROM eclipse-temurin:21-jre-alpine
@@ -449,6 +468,9 @@ ENTRYPOINT ["java", \
     "-Dspring.lifecycle.timeout-per-shutdown-phase=30s", \
     "-jar", "app.jar"]
 ```
+
+> **Docker 层缓存优化**: `pom.xml` 和 `mvn dependency:go-offline` 在源码之前执行。
+> 这样只要 `pom.xml` 不变，依赖下载层会被缓存，大幅加速增量构建。
 
 ### 4.2 文件 7.7 — `.dockerignore`
 
@@ -497,6 +519,10 @@ volumes:
 ```
 
 ### 4.4 文件 7.9 — K8s 配置
+
+> **⚠️ 单实例部署约束**: 当前设计**仅支持单实例部署** (`replicas: 1`)。
+> 原因: JSONL 文件系统存储不支持多实例并发写入，`SessionStore` 的内存索引 + 文件锁仅保证单进程安全。
+> 未来如需水平扩展，参见 00-plan-overview.md §8.1 的扩展方案。
 
 ```yaml
 # k8s/deployment.yaml

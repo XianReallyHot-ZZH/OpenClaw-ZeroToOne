@@ -157,8 +157,9 @@ com.openclaw.enterprise/
 | 2.9 | `channel/impl/CliChannel.java` | 组件 | s04 CLIChannel | 80 |
 | 2.10 | `channel/impl/TelegramChannel.java` | 组件 | s04 TelegramChannel | 250 |
 | 2.11 | `channel/impl/FeishuChannel.java` | 组件 | s04 FeishuChannel | 200 |
+| 2.12 | `channel/impl/FeishuWebhookController.java` | 控制器 | s04 飞书 Webhook 回调 | 40 |
 
-**Sprint 2 小计: ~1,075 行**
+**Sprint 2 小计: ~1,115 行**
 
 ### 3.3 Sprint 3 — 网关与路由 (Day 20-26)
 
@@ -176,8 +177,10 @@ com.openclaw.enterprise/
 | 3.10 | `gateway/BindingStore.java` | 服务 | — | 80 | 路由规则 JSONL 持久化 |
 | 3.11 | `gateway/AgentStore.java` | 服务 | — | 70 | Agent 配置 JSONL 持久化 |
 | 3.12 | `config/ConcurrencyProperties.java` | record | — | 15 | Lane 并发配置 |
+| 3.13 | `gateway/GlobalExceptionHandler.java` | 组件 | — | 60 | @RestControllerAdvice 统一错误处理 |
+| 3.14 | `gateway/MessagePumpService.java` | 服务 | — | 80 | 轮询所有 Channel → 路由到 BindingTable → CommandQueue |
 
-**Sprint 3 小计: ~860 行**
+**Sprint 3 小计: ~1,000 行**
 
 ### 3.4 Sprint 4 — 智能层 (Day 27-34)
 
@@ -201,6 +204,7 @@ com.openclaw.enterprise/
 | # | 文件路径 | 类型 | claw0 映射 | 预估行数 |
 |---|---------|------|-----------|---------|
 | 5.1 | `scheduler/CronSchedule.java` | sealed | s07 CronSchedule | 40 |
+| 5.1b | `scheduler/CronScheduleDeserializer.java` | 组件 | — | 30 | Jackson 自定义反序列化 |
 | 5.2 | `scheduler/CronPayload.java` | sealed | s07 payload 类型 | 25 |
 | 5.3 | `scheduler/CronJob.java` | class | s07 CronJob | 60 |
 | 5.4 | `scheduler/CronJobService.java` | 服务 | s07 CronService | 150 |
@@ -211,7 +215,7 @@ com.openclaw.enterprise/
 | 5.9 | `delivery/DeliveryQueue.java` | 服务 | s08 DeliveryQueue | 120 |
 | 5.10 | `delivery/DeliveryRunner.java` | 服务 | s08 DeliveryRunner | 100 |
 
-**Sprint 5 小计: ~705 行**
+**Sprint 5 小计: ~735 行**
 
 ### 3.6 Sprint 6 — 韧性与并发 (Day 43-51)
 
@@ -246,11 +250,11 @@ com.openclaw.enterprise/
 
 | 分类 | 行数 |
 |------|------|
-| 核心业务代码 (Sprint 1-6) | ~5,137 |
+| 核心业务代码 (Sprint 1-6) | ~5,507 |
 | 配置 & 基础设施 (Sprint 7) | ~410 |
 | 测试代码 (各 Sprint 内) | ~4,000 |
 | 文档 & 部署 (Sprint 7) | ~400 |
-| **总计** | **~10,000 行** |
+| **总计** | **~10,300 行** |
 
 ---
 
@@ -302,6 +306,13 @@ flowchart TB
 
     AGENT --> AM --> GW
     CHAN --> GW
+
++    subgraph "Sprint 3 新增"
++        GEH["gateway/GlobalExceptionHandler"]
++        PUMP["gateway/MessagePumpService"]
++    end
++
++    CHAN --> PUMP --> GW
 
     CMN --> INTEL
     INTEL --> MEM_TOOL
@@ -396,3 +407,35 @@ flowchart LR
          shouldRejectDangerousCommand
          shouldRetryWithExponentialBackoff
 ```
+
+---
+
+## 7. AgentLoop 接口演进时间线
+
+`AgentLoop` 的方法签名随各 Sprint 的集成逐步演化。编码时注意按下表时间线调整：
+
+| Sprint | 签名变化 | 说明 |
+|--------|---------|------|
+| **Sprint 1** | `runTurn(agentId, sessionId, userMessage)` | 自持 `AnthropicClient`，无会话持久化 |
+| **Sprint 2** | 新增依赖 `SessionStore` + `ContextGuard` | `runTurn` 内部加载/保存历史，API 调用通过 `ContextGuard` 包装 |
+| **Sprint 4** | 新增依赖 `PromptAssembler` | `runTurn` 内部调用 `buildSystemPrompt()` 构建 system prompt |
+| **Sprint 6** | `runTurn(agentId, sessionId, userMessage, client)` | `AnthropicClient` 不再自持，改为参数注入（由 `ResilienceRunner` 提供）|
+| **Sprint 6** | 新增 `executeWithClient(client, systemPrompt, messages)` | 内部方法，供 `ResilienceRunner` 调用 |
+
+> **重构策略**: 在 Sprint 6 之前，`AgentLoop` 可以暂时自持一个默认的 `AnthropicClient` Bean。
+> Sprint 6 集成时，移除自持 client，改为方法参数。此变更影响所有调用点（Gateway、Heartbeat、Cron）。
+
+---
+
+## 8. 架构约束与部署说明
+
+### 8.1 单实例部署约束
+
+当前设计**明确为单实例部署**，原因如下：
+- 文件系统 (JSONL) 作为持久化层，不支持多实例并发写入
+- `SessionStore` 使用内存索引 + 文件锁，仅保证单进程内的并发安全
+- `DeliveryQueue` 的 WAL 机制依赖本地文件系统
+- `MemoryStore` 的内存缓存在多实例间无法同步
+
+> **未来扩展**: 如需水平扩展，可引入 `SessionRepository`、`DeliveryRepository` 等持久化接口抽象层，
+> 将 JSONL 文件实现替换为 Redis/PostgreSQL 等分布式存储。此变更不影响业务逻辑层。

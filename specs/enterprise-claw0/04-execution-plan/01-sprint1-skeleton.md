@@ -78,6 +78,23 @@ flowchart TB
 
 ## 2. Day 1: 项目骨架与 Maven 配置
 
+> **⚠️ Day 1 第一步：版本验证**
+>
+> 在创建任何文件之前，必须先验证所有关键依赖版本在 Maven Central 中可用：
+>
+> ```bash
+> # 验证 Spring Boot 版本
+> curl -s "https://search.maven.org/solrsearch/select?q=g:org.springframework.boot+AND+a:spring-boot-starter-parent&rows=5&wt=json" | jq '.response.docs[0].latestVersion'
+>
+> # 验证 Anthropic SDK 版本
+> curl -s "https://search.maven.org/solrsearch/select?q=g:com.anthropic+AND+a:anthropic-java&rows=5&wt=json" | jq '.response.docs[0].latestVersion'
+>
+> # 验证 cron-utils 版本
+> curl -s "https://search.maven.org/solrsearch/select?q=g:com.cronutils+AND+a:cron-utils&rows=5&wt=json" | jq '.response.docs[0].latestVersion'
+> ```
+>
+> 如果指定版本不存在，**立即更新 pom.xml 中的版本号为最新稳定版**，不要等到 Day 2。
+
 ### 2.1 文件 1.1 — `pom.xml`
 
 **路径**: `claw-4j/enterprise-claw-4j/pom.xml`
@@ -203,7 +220,6 @@ SERVER_PORT=8080
 
 ```java
 @Configuration
-@EnableScheduling
 @EnableRetry
 @EnableConfigurationProperties({
     AnthropicProperties.class,
@@ -215,6 +231,7 @@ SERVER_PORT=8080
 })
 public class AppConfig {
     // 全局 Bean 定义（如有）
+    // 注意: @EnableScheduling 不在此处启用，而是在 Sprint 5 的 SchedulingConfig 中统一管理
 }
 ```
 
@@ -255,8 +272,11 @@ public class AnthropicConfig {
 - `GatewayProperties` — default-agent, max-concurrent-agents
 - `HeartbeatProperties` — interval, active-start/end-hour
 - `ChannelProperties` — telegram, feishu 配置
-- `WorkspaceProperties` — path, context-budget
+- `WorkspaceProperties` — path (类型为 `Path`，Spring Boot 自动转换), context-budget
 - `DeliveryProperties` — poll-interval, max-retries, backoff 参数
+
+> **注意**: `WorkspaceProperties.path` 定义为 `Path` 类型而非 `String`，以避免所有使用处的重复转换。
+> Spring Boot `@ConfigurationProperties` 支持 `Path` 类型的自动绑定。
 
 ---
 

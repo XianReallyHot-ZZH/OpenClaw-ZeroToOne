@@ -344,6 +344,71 @@ private List<ScoredEntry> keywordSearch(String query, List<MemoryEntry> entries)
 }
 ```
 
+#### tokenize — 支持中英文混合分词
+
+**分词策略**: 英文按空格+标点分词，中文按字拆分，小写化，去除停用词。
+
+```java
+private static final Set<String> STOP_WORDS = Set.of(
+    "the", "a", "an", "is", "are", "was", "were", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "and", "or", "not", "it", "this", "that",
+    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "个",
+    "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好"
+);
+
+/**
+ * 混合分词: 英文按空格分词，中文按字拆分
+ * 示例: "Hello World 你好世界" → ["hello", "world", "你", "好", "世", "界"]
+ */
+String[] tokenize(String text) {
+    if (text == null || text.isBlank()) return new String[0];
+    text = text.toLowerCase();
+
+    List<String> tokens = new ArrayList<>();
+    StringBuilder asciiBuffer = new StringBuilder();
+
+    for (int i = 0; i < text.length(); i++) {
+        char c = text.charAt(i);
+        if (isCJK(c)) {
+            // 刷出之前累积的英文 token
+            flushAsciiBuffer(asciiBuffer, tokens);
+            // 每个中文字符作为独立 token
+            String charStr = String.valueOf(c);
+            if (!STOP_WORDS.contains(charStr)) {
+                tokens.add(charStr);
+            }
+        } else if (Character.isLetterOrDigit(c)) {
+            asciiBuffer.append(c);
+        } else {
+            // 空格或标点 — 刷出英文 buffer
+            flushAsciiBuffer(asciiBuffer, tokens);
+        }
+    }
+    flushAsciiBuffer(asciiBuffer, tokens);
+    return tokens.toArray(String[]::new);
+}
+
+private void flushAsciiBuffer(StringBuilder buffer, List<String> tokens) {
+    if (buffer.length() > 0) {
+        String word = buffer.toString();
+        if (!STOP_WORDS.contains(word) && word.length() > 1) {
+            tokens.add(word);
+        }
+        buffer.setLength(0);
+    }
+}
+
+private static boolean isCJK(char c) {
+    Character.UnicodeBlock block = Character.UnicodeBlock.of(c);
+    return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+        || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A
+        || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B
+        || block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS
+        || block == Character.UnicodeBlock.HIRAGANA
+        || block == Character.UnicodeBlock.KATAKANA;
+}
+```
+
 #### Hash Vector 实现
 
 ```java
@@ -585,6 +650,9 @@ MessageCreateParams params = MessageCreateParams.builder()
 | `MemoryStoreTest` | 混合检索分数合并 | P1 |
 | `MemoryStoreTest` | 时间衰减 | P1 |
 | `MemoryStoreTest` | MMR 重排去重 | P1 |
+| `MemoryStoreTest` | 中文按字分词 tokenize("你好世界") → ["你","好","世","界"] | P0 |
+| `MemoryStoreTest` | 中英混合分词 tokenize("Hello 你好") → ["hello","你","好"] | P0 |
+| `MemoryStoreTest` | 中文停用词过滤 (如 "的"、"了"、"在") | P1 |
 | `MemoryStoreTest` | 大数据量测试: 插入 500+ 条记忆后搜索性能 (< 500ms) | P1 |
 | `MemoryStoreTest` | 启动预加载后搜索无需重新读文件 | P1 |
 | `MemoryStoreTest` | 写入时增量更新内存缓存 | P2 |

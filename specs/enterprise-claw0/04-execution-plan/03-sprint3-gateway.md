@@ -477,6 +477,55 @@ public void notifyDeliveryFailed(String deliveryId, String error) {
 
 ## 5. Day 25: REST API
 
+### 5.0 文件 3.13 — `GlobalExceptionHandler.java`
+
+**职责**: 统一 REST API 错误响应，与 02-api-and-dataflow.md §5.3 错误码表一一对应。
+
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(AgentException.class)
+    public ResponseEntity<?> handleAgentError(AgentException ex, HttpServletRequest request) {
+        return buildErrorResponse(404, ex.getErrorCode(), ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(ToolExecutionException.class)
+    public ResponseEntity<?> handleToolError(ToolExecutionException ex, HttpServletRequest request) {
+        return buildErrorResponse(500, ex.getErrorCode(), ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(ContextOverflowException.class)
+    public ResponseEntity<?> handleOverflow(ContextOverflowException ex, HttpServletRequest request) {
+        return buildErrorResponse(500, ex.getErrorCode(), ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(ProfileExhaustedException.class)
+    public ResponseEntity<?> handleProfileExhausted(ProfileExhaustedException ex, HttpServletRequest request) {
+        return buildErrorResponse(503, ex.getErrorCode(), ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(ChannelException.class)
+    public ResponseEntity<?> handleChannelError(ChannelException ex, HttpServletRequest request) {
+        return buildErrorResponse(502, ex.getErrorCode(), ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(JsonRpcException.class)
+    public ResponseEntity<?> handleJsonRpc(JsonRpcException ex, HttpServletRequest request) {
+        return buildErrorResponse(400, "JSON_RPC_ERROR", ex.getMessage(), request);
+    }
+
+    private ResponseEntity<?> buildErrorResponse(int status, String code, String message,
+                                                   HttpServletRequest request) {
+        return ResponseEntity.status(status).body(Map.of(
+            "error", Map.of("code", code, "message", message),
+            "timestamp", Instant.now(),
+            "path", request.getRequestURI()
+        ));
+    }
+}
+```
+
 ### 5.1 文件 3.7 — `GatewayController.java`
 
 **claw0 参考**: `s05_gateway_routing.py` 中的 REST 端点 (Java 新增，claw0 仅有 WebSocket)
@@ -544,23 +593,89 @@ public class GatewayController {
 }
 ```
 
-**统一错误处理**:
+**统一错误处理**: 参见上方 `GlobalExceptionHandler.java`（文件 3.13），所有 REST 端点的异常由统一的 `@RestControllerAdvice` 处理。
+
+---
+
+## 5.5 文件 3.14 — `MessagePumpService.java`
+
+**职责**: 独立的消息泵服务，负责从所有 Channel 拉取消息并路由到 Agent。
+
+> **设计说明**: claw0 中此逻辑分散在 `GatewayServer` 内部。Java 版本将其抽出为独立 `@Service`，职责更清晰。
 
 ```java
-@RestControllerAdvice
-public class GlobalExceptionHandler {
-    @ExceptionHandler(AgentException.class)
-    public ResponseEntity<?> handleAgentNotFound(AgentException ex) {
-        return ResponseEntity.status(404).body(Map.of(
-            "error", Map.of(
-                "code", "AGENT_NOT_FOUND",
-                "message", ex.getMessage()
-            ),
-            "timestamp", Instant.now(),
-            "path", request.getRequestURI()
-        ));
+@Service
+public class MessagePumpService {
+    private final ChannelManager channelManager;
+    private final BindingTable bindingTable;
+    private final AgentManager agentManager;
+    private final CommandQueue commandQueue;
+    private final AgentLoop agentLoop;  // Sprint 6 后改为 ResilienceRunner
+    private volatile boolean running = true;
+
+    @PostConstruct
+    void startPumping() {
+        Thread.ofVirtual().name("message-pump").start(() -> {
+            while (running) {
+                boolean anyMessage = false;
+                for (Channel channel : channelManager.getAll()) {
+                    Optional<InboundMessage> msgOpt = channel.receive();
+                    if (msgOpt.isPresent()) {
+                        anyMessage = true;
+                        routeMessage(msgOpt.get());
+                    }
+                }
+                // 如果没有消息，短暂休眠避免忙等
+                if (!anyMessage) {
+                    try { Thread.sleep(100); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                }
+            }
+        });
+    }
+
+    private void routeMessage(InboundMessage msg) {
+        // 1. 路由解析
+        Optional<ResolvedBinding> bindingOpt = bindingTable.resolve(
+            msg.channel(), msg.accountId(), msg.guildId(), msg.peerId());
+        if (bindingOpt.isEmpty()) {
+            log.warn("No binding found for message from channel={}, peer={}",
+                msg.channel(), msg.peerId());
+            return;
+        }
+        ResolvedBinding binding = bindingOpt.get();
+
+        // 2. 会话键构建
+        String sessionKey = agentManager.buildSessionKey(binding.agentId(), msg);
+
+        // 3. 入队执行
+        commandQueue.enqueue("main", () -> {
+            AgentTurnResult result = agentLoop.runTurn(
+                binding.agentId(), sessionKey, msg.text());
+            // 4. 回复投递 (Sprint 5 后通过 DeliveryQueue)
+            channelManager.get(msg.channel())
+                .ifPresent(ch -> ch.send(msg.peerId(), result.text()));
+            return result;
+        });
+    }
+
+    public void stop() {
+        running = false;
     }
 }
+```
+
+**消息泵与各渠道的关系**:
+
+```mermaid
+flowchart LR
+    CLI["CliChannel\n(stdin队列)"] --> PUMP["MessagePumpService\n(虚拟线程轮询)"]
+    TG["TelegramChannel\n(长轮询队列)"] --> PUMP
+    FS["FeishuChannel\n(Webhook队列)"] --> PUMP
+
+    PUMP --> BT["BindingTable.resolve()"]
+    BT --> AM["AgentManager.buildSessionKey()"]
+    AM --> CQ["CommandQueue.enqueue('main', ...)"]
 ```
 
 ---
@@ -583,6 +698,10 @@ public class GlobalExceptionHandler {
 | `AuthFilterTest` | DefaultAuthFilter 放行所有请求 | P1 |
 | `BindingStoreTest` | JSONL 加载/追加/全量重写 | P0 |
 | `AgentStoreTest` | JSONL 加载/注册/注销持久化 | P0 |
+| `GlobalExceptionHandlerTest` | 各异常类型映射到正确的 HTTP 状态码 | P0 |
+| `MessagePumpServiceTest` | 从 Channel 拉取消息并路由 | P0 |
+| `MessagePumpServiceTest` | 无绑定时不崩溃 (warn 日志) | P1 |
+| `MessagePumpServiceTest` | 多渠道并发轮询 | P1 |
 
 ---
 
@@ -606,3 +725,6 @@ public class GlobalExceptionHandler {
 - [ ] `GET /api/v1/agents/{id}` 获取单个 Agent 端点可用
 - [ ] WebSocket `typing` / `typing.stop` 通知正常推送
 - [ ] `heartbeat.output` / `cron.output` / `delivery.failed` 通知正常推送
+- [ ] `GlobalExceptionHandler` 正确映射各异常类型到 HTTP 状态码 (404/500/502/503)
+- [ ] `MessagePumpService` 从 CLI Channel 接收消息并路由到正确 Agent
+- [ ] `MessagePumpService` 在无绑定时记录 warn 日志但不崩溃

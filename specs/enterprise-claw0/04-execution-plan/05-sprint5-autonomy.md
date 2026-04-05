@@ -76,6 +76,10 @@ public sealed interface CronSchedule
 }
 ```
 
+### 2.1b 文件 5.1b — `CronScheduleDeserializer.java`
+
+**职责**: Jackson 自定义反序列化器，将 CRON.json 中的联合类型 schedule 字段正确反序列化。
+
 **JSON 反序列化**:
 
 CRON.json 中的 schedule 字段是联合类型，需要自定义 Jackson 反序列化器：
@@ -356,7 +360,7 @@ public class HeartbeatService {
 
 ```java
 @Configuration
-@EnableScheduling
+@EnableScheduling  // 调度功能在此处统一启用（AppConfig 中不重复声明）
 public class SchedulingConfig implements SchedulingConfigurer {
     @Override
     public void configureTasks(ScheduledTaskRegistrar registrar) {
@@ -366,6 +370,9 @@ public class SchedulingConfig implements SchedulingConfigurer {
     }
 }
 ```
+
+> **注意**: `@EnableScheduling` 仅在此处声明。Sprint 1 的 `AppConfig` 中不再包含 `@EnableScheduling`，
+> 避免重复注册导致混淆。
 
 ---
 
@@ -604,6 +611,10 @@ public class DeliveryRunner {
 | `CronJobServiceTest` | 运行时添加任务持久化到 CRON.json | P1 |
 | `CronJobServiceTest` | 运行时移除任务并更新文件 | P1 |
 | `CronJobServiceTest` | cron-runs.jsonl 日志记录 | P2 |
+| `CronScheduleDeserializerTest` | at 格式反序列化: `{"at":"2026-04-05T14:00:00Z"}` | P0 |
+| `CronScheduleDeserializerTest` | every 格式反序列化: `{"every":3600}` | P0 |
+| `CronScheduleDeserializerTest` | cron 格式反序列化: `{"cron":"0 9 * * *"}` | P0 |
+| `CronScheduleDeserializerTest` | 无效格式抛出异常 | P1 |
 | `HeartbeatServiceTest` | 活跃时段内触发 | P0 |
 | `HeartbeatServiceTest` | 活跃时段外跳过 | P0 |
 | `HeartbeatServiceTest` | 输出与上次相同时跳过 | P1 |
