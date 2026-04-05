@@ -34,7 +34,12 @@ git submodule add https://github.com/shareAI-lab/claw0 vendors/claw0
 
 根据 @specs/light-claw0-java-rewrite-plan.md 撰写一份详细的、可实施的、可落地的、规划合理的编码执行计划，如需图表，使用 mermaid chart，文档放在 @specs/目录下。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
 
-根据 @specs/enterprise-claw0 目录下的方案文档, 撰写一份详细的、可实施的、可落地的、规划合理的编码执行计划，如需图表，使用 mermaid chart，文档放在 @specs/enterprise-claw0 目录下。有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+核心任务：
+根据 @specs/enterprise-claw0 目录下的方案文档, 撰写一份详细的、可实施的、可落地的、规划合理的编码执行计划，如需图表，使用 mermaid chart，文档放在 @specs/enterprise-claw0 目录下。
+其他注意点：
+（1）有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+（2）@vendors/claw0 是重写对象claw0的源码目录，所有代码都在该目录下。
+（3）如果文档太大了，尝试分阶段独立写文档，每个阶段的文档放在 @specs/enterprise-claw0/04-execution-plan/ 目录下。
 
 
 # 项目执行
