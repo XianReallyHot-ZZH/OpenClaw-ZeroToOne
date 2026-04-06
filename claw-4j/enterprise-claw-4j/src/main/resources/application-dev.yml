@@ -1,0 +1,5 @@
+# 开发环境配置覆写
+logging:
+  level:
+    com.openclaw.enterprise: DEBUG
+    org.springframework.web: DEBUG

@@ -1,0 +1,81 @@
+# =============================================================================
+# enterprise-claw-4j 主配置文件
+# 基于 Spring Boot 3.5，使用 application-{profile}.yml 进行环境覆写
+# =============================================================================
+
+spring:
+  application:
+    name: enterprise-claw-4j
+  threads:
+    virtual:
+      enabled: true            # 启用虚拟线程支持
+  lifecycle:
+    timeout-per-shutdown-phase: 30s  # 优雅关闭超时
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful          # 启用优雅关闭
+
+# ---- Anthropic API 配置 ----
+anthropic:
+  model-id: ${MODEL_ID:claude-sonnet-4-20250514}
+  max-tokens: ${MAX_TOKENS:8096}
+  profiles:
+    - name: main
+      api-key: ${ANTHROPIC_API_KEY:}
+      base-url: ${ANTHROPIC_BASE_URL:}
+
+# ---- 工作空间配置 ----
+workspace:
+  path: ${WORKSPACE_PATH:./workspace}
+  context-budget: ${CONTEXT_BUDGET:180000}
+
+# ---- 网关配置 ----
+gateway:
+  default-agent: ${DEFAULT_AGENT:luna}
+  max-concurrent-agents: ${MAX_CONCURRENT_AGENTS:10}
+
+# ---- 心跳配置 ----
+heartbeat:
+  interval-seconds: ${HEARTBEAT_INTERVAL:1800}
+  active-start-hour: ${HEARTBEAT_START_HOUR:9}
+  active-end-hour: ${HEARTBEAT_END_HOUR:22}
+
+# ---- 渠道配置 ----
+channels:
+  telegram:
+    enabled: ${TELEGRAM_ENABLED:false}
+    token: ${TELEGRAM_BOT_TOKEN:}
+  feishu:
+    enabled: ${FEISHU_ENABLED:false}
+    app-id: ${FEISHU_APP_ID:}
+    app-secret: ${FEISHU_APP_SECRET:}
+    verification-token: ${FEISHU_VERIFICATION_TOKEN:}
+
+# ---- 投递队列配置 ----
+delivery:
+  poll-interval-ms: ${DELIVERY_POLL_INTERVAL:1000}
+  max-retries: ${DELIVERY_MAX_RETRIES:5}
+  backoff-base-seconds: ${DELIVERY_BACKOFF_BASE:5}
+  backoff-multiplier: ${DELIVERY_BACKOFF_MULTIPLIER:5.0}
+  jitter-factor: ${DELIVERY_JITTER:0.2}
+
+# ---- 并发控制配置 ----
+concurrency:
+  lanes:
+    main:
+      max-concurrency: ${LANE_MAIN_CONCURRENCY:3}
+    cron:
+      max-concurrency: ${LANE_CRON_CONCURRENCY:1}
+    heartbeat:
+      max-concurrency: ${LANE_HEARTBEAT_CONCURRENCY:1}
+
+# ---- Actuator 端点 ----
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized

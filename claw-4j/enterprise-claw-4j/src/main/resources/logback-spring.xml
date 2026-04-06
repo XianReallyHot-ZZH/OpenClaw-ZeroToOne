@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    enterprise-claw-4j 日志配置
+    开发环境: 彩色控制台输出
+    生产环境: JSON 结构化日志 (Logstash 格式)
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- 控制台输出 (开发环境) -->
+    <springProfile name="default | dev">
+        <consoleAppender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%clr(%d{HH:mm:ss.SSS}){faint} %clr(%-5level) %clr([%thread]){blue} %clr(%-40.40logger{39}){cyan} : %msg%n</pattern>
+            </encoder>
+        </consoleAppender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- JSON 结构化日志 (生产环境) -->
+    <springProfile name="prod">
+        <consoleAppender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <customFields>{"app_name":"enterprise-claw-4j"}</customFields>
+                <includeMdc>true</includeMdc>
+                <includeContext>true</includeContext>
+            </encoder>
+        </consoleAppender>
+
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE"/>
+        </root>
+    </springProfile>
+</configuration>

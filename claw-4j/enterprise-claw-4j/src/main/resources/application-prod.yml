@@ -1,0 +1,14 @@
+# 生产环境配置覆写
+logging:
+  level:
+    com.openclaw.enterprise: INFO
+    org.springframework: WARN
+
+management:
+  endpoint:
+    health:
+      show-details: always
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
