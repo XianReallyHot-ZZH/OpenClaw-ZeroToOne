@@ -6,6 +6,8 @@ import com.anthropic.models.messages.*;
 import com.anthropic.models.messages.Tool;
 import com.openclaw.enterprise.common.JsonUtils;
 import com.openclaw.enterprise.config.AppProperties;
+import com.openclaw.enterprise.session.SessionStore;
+import com.openclaw.enterprise.session.TranscriptEvent;
 import com.openclaw.enterprise.tool.ToolDefinition;
 import com.openclaw.enterprise.tool.ToolRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -48,6 +50,8 @@ public class AgentLoop {
     private final AnthropicClient client;
     private final ToolRegistry toolRegistry;
     private final AppProperties.AnthropicProperties anthropicProps;
+    private final SessionStore sessionStore;
+    private final ContextGuard contextGuard;
 
     /**
      * 构造 Agent 循环服务
@@ -55,13 +59,19 @@ public class AgentLoop {
      * @param client         Anthropic API 客户端
      * @param toolRegistry   工具注册中心
      * @param anthropicProps Anthropic 配置属性
+     * @param sessionStore   会话持久化存储 (Sprint 2)
+     * @param contextGuard   上下文守卫 (Sprint 2)
      */
     public AgentLoop(AnthropicClient client,
                      ToolRegistry toolRegistry,
-                     AppProperties.AnthropicProperties anthropicProps) {
+                     AppProperties.AnthropicProperties anthropicProps,
+                     SessionStore sessionStore,
+                     ContextGuard contextGuard) {
         this.client = client;
         this.toolRegistry = toolRegistry;
         this.anthropicProps = anthropicProps;
+        this.sessionStore = sessionStore;
+        this.contextGuard = contextGuard;
     }
 
     /**
@@ -78,15 +88,30 @@ public class AgentLoop {
     public AgentTurnResult runTurn(String agentId, String sessionId, String userMessage) {
         log.debug("[{}] Starting turn for session {}", agentId, sessionId);
 
-        // 构建消息列表，加入用户消息
-        List<MessageParam> messages = new ArrayList<>();
+        // 1. 从 JSONL 加载会话历史
+        List<MessageParam> messages = new ArrayList<>(sessionStore.loadSession(sessionId));
+
+        // 2. 追加用户消息到 JSONL
+        sessionStore.appendTranscript(sessionId,
+            new TranscriptEvent("user", "user", userMessage, null, null, null, java.time.Instant.now()));
+
+        // 3. 将用户消息加入 API 消息列表
         messages.add(MessageParam.builder()
             .role(MessageParam.Role.USER)
             .content(userMessage)
             .build());
 
-        // 进入工具调用循环
-        return processToolUseLoop(agentId, messages);
+        // 4. 进入工具调用循环
+        AgentTurnResult result = processToolUseLoop(agentId, sessionId, messages);
+
+        // 5. 持久化助手回复到 JSONL
+        if (result.text() != null && !result.text().isEmpty()) {
+            sessionStore.appendTranscript(sessionId,
+                new TranscriptEvent("assistant", "assistant", result.text(),
+                    null, null, null, java.time.Instant.now()));
+        }
+
+        return result;
     }
 
     /**
@@ -105,13 +130,17 @@ public class AgentLoop {
         log.debug("[{}] Starting turn for session {} (with history, {} messages)",
             agentId, sessionId, messages.size());
 
+        // 追加用户消息到 JSONL
+        sessionStore.appendTranscript(sessionId,
+            new TranscriptEvent("user", "user", userMessage, null, null, null, java.time.Instant.now()));
+
         // 将用户消息追加到历史
         messages.add(MessageParam.builder()
             .role(MessageParam.Role.USER)
             .content(userMessage)
             .build());
 
-        return processToolUseLoop(agentId, messages);
+        return processToolUseLoop(agentId, sessionId, messages);
     }
 
     /**
@@ -132,11 +161,13 @@ public class AgentLoop {
      * <p>claw0 对应: s02_tool_use.py 中 while True 循环 +
      * stop_reason 分支处理</p>
      *
-     * @param agentId Agent ID (用于日志)
-     * @param messages 消息列表 (会被修改 — 追加助手消息和工具结果)
+     * @param agentId   Agent ID (用于日志)
+     * @param sessionId 会话 ID (用于 JSONL 持久化)
+     * @param messages  消息列表 (会被修改 — 追加助手消息和工具结果)
      * @return 对话结果
      */
-    private AgentTurnResult processToolUseLoop(String agentId, List<MessageParam> messages) {
+    private AgentTurnResult processToolUseLoop(String agentId, String sessionId,
+                                               List<MessageParam> messages) {
         List<ToolCallRecord> toolCalls = new ArrayList<>();
         int totalInputTokens = 0;
         int totalOutputTokens = 0;
