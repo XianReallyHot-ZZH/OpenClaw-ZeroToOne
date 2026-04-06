@@ -106,6 +106,21 @@ public class FeishuChannel implements Channel {
      */
     @Override
     public boolean send(String chatId, String text) {
+        return sendInternal(chatId, text, 0);
+    }
+
+    /**
+     * 带重试深度保护的内部发送方法
+     *
+     * <p>当收到 401 (token 过期) 时，清除 token 并递归重试，
+     * 但最多重试 2 次以防止 StackOverflowError。</p>
+     *
+     * @param chatId     目标 chat_id
+     * @param text       消息文本
+     * @param retryDepth 当前重试深度
+     * @return 发送成功返回 true
+     */
+    private boolean sendInternal(String chatId, String text, int retryDepth) {
         try {
             ensureToken();
 
@@ -127,10 +142,14 @@ public class FeishuChannel implements Channel {
 
             if (response.statusCode() != 200) {
                 log.error("Feishu send failed: {} - {}", response.statusCode(), response.body());
-                // token 可能过期，尝试刷新后重试
+                // token 可能过期，尝试刷新后重试（最多重试 2 次）
                 if (response.statusCode() == 401) {
+                    if (retryDepth >= 2) {
+                        log.error("Feishu send retry depth exceeded ({}), giving up", retryDepth);
+                        return false;
+                    }
                     tenantToken = null;
-                    return send(chatId, text);
+                    return sendInternal(chatId, text, retryDepth + 1);
                 }
                 return false;
             }

@@ -3,9 +3,7 @@ package com.openclaw.enterprise.gateway;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openclaw.enterprise.agent.AgentConfig;
-import com.openclaw.enterprise.agent.AgentLoop;
 import com.openclaw.enterprise.agent.DmScope;
-import com.openclaw.enterprise.channel.InboundMessage;
 import com.openclaw.enterprise.common.JsonUtils;
 import com.openclaw.enterprise.common.exceptions.JsonRpcException;
 import com.openclaw.enterprise.session.SessionStore;
@@ -18,7 +16,6 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -48,26 +45,26 @@ public class GatewayWebSocketHandler extends TextWebSocketHandler {
 
     private final ObjectMapper objectMapper = JsonUtils.mapper();
 
-    /** 延迟注入的依赖 (通过 setter) */
-    private BindingTable bindingTable;
-    private BindingStore bindingStore;
-    private AgentManager agentManager;
-    private AgentStore agentStore;
-    private SessionStore sessionStore;
-    private AgentLoop agentLoop;
+    /** 通过构造器注入的依赖 */
+    private final BindingTable bindingTable;
+    private final BindingStore bindingStore;
+    private final AgentManager agentManager;
+    private final AgentStore agentStore;
+    private final SessionStore sessionStore;
+    private final GatewayService gatewayService;
 
     /**
-     * 注入依赖 (由 GatewayController 或配置类调用)
+     * 构造器注入 — Spring 自动装配所有依赖
      */
-    public void setDependencies(BindingTable bindingTable, BindingStore bindingStore,
-                                AgentManager agentManager, AgentStore agentStore,
-                                SessionStore sessionStore, AgentLoop agentLoop) {
+    public GatewayWebSocketHandler(BindingTable bindingTable, BindingStore bindingStore,
+                                   AgentManager agentManager, AgentStore agentStore,
+                                   SessionStore sessionStore, GatewayService gatewayService) {
         this.bindingTable = bindingTable;
         this.bindingStore = bindingStore;
         this.agentManager = agentManager;
         this.agentStore = agentStore;
         this.sessionStore = sessionStore;
-        this.agentLoop = agentLoop;
+        this.gatewayService = gatewayService;
     }
 
     @Override
@@ -131,32 +128,15 @@ public class GatewayWebSocketHandler extends TextWebSocketHandler {
         String peerId = params.has("peer_id") ? params.get("peer_id").asText() : "user";
         String guildId = params.has("guild_id") ? params.get("guild_id").asText() : null;
 
-        // 1. 路由解析
-        var resolved = bindingTable.resolve(channel, accountId, guildId, peerId)
-            .orElseThrow(() -> new JsonRpcException(-32603,
-                "No binding found for channel=" + channel
-                    + " account=" + accountId + " peer=" + peerId));
+        try {
+            var routeResult = gatewayService.routeAndExecute(text, channel, accountId, peerId, guildId);
+            var result = routeResult.result();
 
-        String agentId = resolved.agentId();
-
-        // 2. 构建 InboundMessage (用于 session key 构建)
-        InboundMessage msg = new InboundMessage(text, peerId, channel,
-            accountId, peerId, guildId, guildId != null,
-            List.of(), null, Instant.now());
-
-        // 3. 构建 session key
-        String sessionKey = agentManager.buildSessionKey(agentId, msg);
-
-        // 4. 获取或创建会话
-        String sessionId = sessionStore.getSessionMeta(sessionKey)
-            .map(com.openclaw.enterprise.session.SessionMeta::sessionId)
-            .orElseGet(() -> sessionStore.createSession(agentId, sessionKey));
-
-        // 5. 执行 Agent 循环
-        var result = agentLoop.runTurn(agentId, sessionId, text);
-
-        return Map.of("status", "ok", "text", result.text(),
-            "agent_id", agentId, "session_id", sessionId);
+            return Map.of("status", "ok", "text", result.text(),
+                "agent_id", routeResult.agentId(), "session_id", routeResult.sessionId());
+        } catch (IllegalStateException e) {
+            throw new JsonRpcException(-32603, e.getMessage());
+        }
     }
 
     private Object handleBindSet(JsonNode params) {

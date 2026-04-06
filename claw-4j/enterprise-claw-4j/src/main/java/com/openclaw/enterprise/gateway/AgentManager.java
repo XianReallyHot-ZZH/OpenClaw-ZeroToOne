@@ -147,4 +147,43 @@ public class AgentManager {
                 "Invalid agent ID: must match [a-z0-9][a-z0-9_-]{0,63}");
         }
     }
+
+    /**
+     * 规范化 Agent ID — 将原始字符串转为合法的 Agent ID 格式
+     *
+     * <p>转换规则：</p>
+     * <ul>
+     *   <li>转换为小写</li>
+     *   <li>空格和特殊字符替换为连字符</li>
+     *   <li>移除开头非字母数字字符</li>
+     *   <li>截断至 64 字符</li>
+     *   <li>匹配模式 {@code [a-z0-9][a-z0-9_-]{0,63}}</li>
+     * </ul>
+     *
+     * @param raw 原始 Agent ID 字符串
+     * @return 规范化后的 Agent ID
+     */
+    public String normalizeAgentId(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "agent";
+        }
+        // 转小写，空格和特殊字符替换为连字符
+        String normalized = raw.toLowerCase()
+            .replaceAll("[^a-z0-9_-]", "-");
+        // 移除开头的非字母数字字符
+        normalized = normalized.replaceFirst("^[^a-z0-9]+", "");
+        // 压缩连续连字符
+        normalized = normalized.replaceAll("-+", "-");
+        // 去除首尾连字符
+        normalized = normalized.replaceAll("^-|-$", "");
+        // 截断至 64 字符
+        if (normalized.length() > 64) {
+            normalized = normalized.substring(0, 64);
+        }
+        // 确保至少有一个有效字符
+        if (normalized.isEmpty()) {
+            normalized = "agent";
+        }
+        return normalized;
+    }
 }

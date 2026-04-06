@@ -1,5 +1,7 @@
 package com.openclaw.enterprise.scheduler;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+
 /**
  * Cron 任务载荷 — 描述定时任务执行的具体动作
  *
@@ -11,6 +13,7 @@ package com.openclaw.enterprise.scheduler;
  *
  * <p>claw0 参考: s07_heartbeat_cron.py 第 140-160 行 CronPayload</p>
  */
+@JsonDeserialize(using = CronPayloadDeserializer.class)
 public sealed interface CronPayload
     permits CronPayload.AgentTurn, CronPayload.SystemEvent {
 

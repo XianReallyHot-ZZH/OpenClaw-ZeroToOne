@@ -100,6 +100,23 @@ public final class AppProperties {
         int contextBudget
     ) {}
 
+    // ---- CORS 配置 ----
+
+    /**
+     * CORS 跨域配置
+     */
+    @ConfigurationProperties(prefix = "cors")
+    public record CorsProperties(
+        List<String> allowedOrigins
+    ) {
+        /** 默认允许的来源列表 */
+        public List<String> effectiveOrigins() {
+            return allowedOrigins != null && !allowedOrigins.isEmpty()
+                ? allowedOrigins
+                : List.of("http://localhost:8080", "ws://localhost:8080");
+        }
+    }
+
     // ---- 投递队列配置 ----
 
     /**

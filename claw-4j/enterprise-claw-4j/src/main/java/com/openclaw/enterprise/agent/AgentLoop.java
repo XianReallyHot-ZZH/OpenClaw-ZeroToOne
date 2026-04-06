@@ -6,6 +6,8 @@ import com.anthropic.models.messages.*;
 import com.anthropic.models.messages.Tool;
 import com.openclaw.enterprise.common.JsonUtils;
 import com.openclaw.enterprise.config.AppProperties;
+import com.openclaw.enterprise.intelligence.PromptAssembler;
+import com.openclaw.enterprise.intelligence.PromptContext;
 import com.openclaw.enterprise.session.SessionStore;
 import com.openclaw.enterprise.session.TranscriptEvent;
 import com.openclaw.enterprise.tool.ToolDefinition;
@@ -14,6 +16,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -48,34 +51,41 @@ public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
 
+    /** 工具调用循环最大迭代次数 — 防止无限循环 */
+    private static final int MAX_TOOL_ITERATIONS = 50;
+
     private final AnthropicClient client;
     private final ToolRegistry toolRegistry;
     private final AppProperties.AnthropicProperties anthropicProps;
     private final SessionStore sessionStore;
     private final ContextGuard contextGuard;
+    private final PromptAssembler promptAssembler;
     private final MeterRegistry meterRegistry;
 
     /**
      * 构造 Agent 循环服务
      *
-     * @param client         Anthropic API 客户端
-     * @param toolRegistry   工具注册中心
-     * @param anthropicProps Anthropic 配置属性
-     * @param sessionStore   会话持久化存储 (Sprint 2)
-     * @param contextGuard   上下文守卫 (Sprint 2)
-     * @param meterRegistry  Micrometer 指标注册表 (Sprint 7)
+     * @param client           Anthropic API 客户端
+     * @param toolRegistry     工具注册中心
+     * @param anthropicProps   Anthropic 配置属性
+     * @param sessionStore     会话持久化存储 (Sprint 2)
+     * @param contextGuard     上下文守卫 (Sprint 2)
+     * @param promptAssembler  系统提示词组装器 (Sprint 4)
+     * @param meterRegistry    Micrometer 指标注册表 (Sprint 7)
      */
     public AgentLoop(AnthropicClient client,
                      ToolRegistry toolRegistry,
                      AppProperties.AnthropicProperties anthropicProps,
                      SessionStore sessionStore,
                      ContextGuard contextGuard,
-                     MeterRegistry meterRegistry) {
+                     @Nullable PromptAssembler promptAssembler,
+                     @Nullable MeterRegistry meterRegistry) {
         this.client = client;
         this.toolRegistry = toolRegistry;
         this.anthropicProps = anthropicProps;
         this.sessionStore = sessionStore;
         this.contextGuard = contextGuard;
+        this.promptAssembler = promptAssembler;
         this.meterRegistry = meterRegistry;
     }
 
@@ -108,7 +118,28 @@ public class AgentLoop {
      */
     public AgentTurnResult runTurn(String agentId, String sessionId,
                                    String userMessage, AnthropicClient client) {
-        log.debug("[{}] Starting turn for session {}", agentId, sessionId);
+        return runTurn(agentId, sessionId, userMessage, client, null);
+    }
+
+    /**
+     * 执行一轮 Agent 对话 (使用外部注入的客户端 + 可选模型降级)
+     *
+     * <p>用于 Sprint 6 的 ResilienceRunner 在所有 Profile 耗尽时
+     * 降级到更便宜的模型进行调用。</p>
+     *
+     * @param agentId     Agent ID
+     * @param sessionId   会话 ID
+     * @param userMessage 用户消息
+     * @param client      外部注入的 AnthropicClient
+     * @param modelOverride 可选的模型 ID 覆盖 (null 则使用默认模型)
+     * @return 本轮对话的完整结果
+     */
+    public AgentTurnResult runTurn(String agentId, String sessionId,
+                                   String userMessage, AnthropicClient client,
+                                   @Nullable String modelOverride) {
+        log.debug("[{}] Starting turn for session {} (model={})",
+            agentId, sessionId,
+            modelOverride != null ? modelOverride : anthropicProps.modelId());
 
         // 1. 从 JSONL 加载会话历史
         List<MessageParam> messages = new ArrayList<>(sessionStore.loadSession(sessionId));
@@ -123,8 +154,8 @@ public class AgentLoop {
             .content(userMessage)
             .build());
 
-        // 4. 进入工具调用循环 (使用注入的客户端)
-        AgentTurnResult result = processToolUseLoop(agentId, sessionId, messages, client);
+        // 4. 进入工具调用循环 (使用注入的客户端和可选模型)
+        AgentTurnResult result = processToolUseLoop(agentId, sessionId, messages, client, modelOverride);
 
         // 5. 持久化助手回复到 JSONL
         if (result.text() != null && !result.text().isEmpty()) {
@@ -158,8 +189,19 @@ public class AgentLoop {
     public AgentTurnResult runTurn(String agentId, String sessionId,
                                    List<MessageParam> messages, String userMessage,
                                    AnthropicClient client) {
-        log.debug("[{}] Starting turn for session {} (with history, {} messages)",
-            agentId, sessionId, messages.size());
+        return runTurn(agentId, sessionId, messages, userMessage, client, null);
+    }
+
+    /**
+     * 执行一轮 Agent 对话 (带已有消息历史 + 外部客户端 + 可选模型降级)
+     */
+    public AgentTurnResult runTurn(String agentId, String sessionId,
+                                   List<MessageParam> messages, String userMessage,
+                                   AnthropicClient client,
+                                   @Nullable String modelOverride) {
+        log.debug("[{}] Starting turn for session {} (with history, {} messages, model={})",
+            agentId, sessionId, messages.size(),
+            modelOverride != null ? modelOverride : anthropicProps.modelId());
 
         // 追加用户消息到 JSONL
         sessionStore.appendTranscript(sessionId,
@@ -171,7 +213,7 @@ public class AgentLoop {
             .content(userMessage)
             .build());
 
-        return processToolUseLoop(agentId, sessionId, messages, client);
+        return processToolUseLoop(agentId, sessionId, messages, client, modelOverride);
     }
 
     /**
@@ -193,27 +235,47 @@ public class AgentLoop {
      * stop_reason 分支处理</p>
      *
      * @param agentId   Agent ID (用于日志)
-     * @param agentId   Agent ID (用于日志)
      * @param sessionId 会话 ID (用于 JSONL 持久化)
      * @param messages  消息列表 (会被修改 — 追加助手消息和工具结果)
+     * @param client    AnthropicClient to use for API calls
+     * @param modelOverride optional model ID override (null = use default)
      * @return 对话结果
      */
     private AgentTurnResult processToolUseLoop(String agentId, String sessionId,
                                                List<MessageParam> messages,
-                                               AnthropicClient client) {
+                                               AnthropicClient client,
+                                               @Nullable String modelOverride) {
         List<ToolCallRecord> toolCalls = new ArrayList<>();
-        int totalInputTokens = 0;
-        int totalOutputTokens = 0;
+        long totalInputTokens = 0;
+        long totalOutputTokens = 0;
         String finalText = "";
         String lastStopReason = "unknown";
 
         // 构建工具定义列表 (每次循环前获取，以支持动态注册)
         List<Tool> sdkTools = buildSdkTools();
 
+        // Build system prompt via PromptAssembler (if available)
+        String systemPrompt = "";
+        if (promptAssembler != null) {
+            try {
+                systemPrompt = promptAssembler.buildSystemPrompt(agentId,
+                    new PromptContext("api", false, false, ""));
+            } catch (Exception e) {
+                log.warn("[{}] Failed to build system prompt: {}", agentId, e.getMessage());
+            }
+        }
+
+        int iterationCount = 0;
         while (true) {
+            iterationCount++;
+            if (iterationCount > MAX_TOOL_ITERATIONS) {
+                log.warn("[{}] Exceeded max tool iterations ({})", agentId, MAX_TOOL_ITERATIONS);
+                break;
+            }
             // 构建 API 请求参数
+            String model = modelOverride != null ? modelOverride : anthropicProps.modelId();
             var paramsBuilder = MessageCreateParams.builder()
-                .model(anthropicProps.modelId())
+                .model(model)
                 .maxTokens((long) anthropicProps.maxTokens())
                 .messages(messages);
 
@@ -222,6 +284,10 @@ public class AgentLoop {
                 paramsBuilder.tools(sdkTools.stream()
                     .map(ToolUnion::ofTool)
                     .toList());
+            }
+
+            if (!systemPrompt.isEmpty()) {
+                paramsBuilder.system(systemPrompt);
             }
 
             MessageCreateParams params = paramsBuilder.build();
@@ -244,8 +310,8 @@ public class AgentLoop {
 
             // 累加 token 用量
             Usage usage = response.usage();
-            totalInputTokens += (int) usage.inputTokens();
-            totalOutputTokens += (int) usage.outputTokens();
+            totalInputTokens += usage.inputTokens();
+            totalOutputTokens += usage.outputTokens();
 
             // 提取文本内容
             StringBuilder textBuilder = new StringBuilder();
@@ -304,6 +370,10 @@ public class AgentLoop {
                     // 分发并执行工具
                     String result;
                     try {
+                        // Persist tool_use event to JSONL
+                        sessionStore.appendTranscript(sessionId,
+                            new TranscriptEvent("tool_use", "assistant", null, toolName, toolId, toolInput, java.time.Instant.now()));
+
                         result = toolRegistry.dispatch(toolName, toolInput);
                     } catch (Exception e) {
                         // 工具执行失败 — 返回错误信息给 Claude
@@ -311,6 +381,10 @@ public class AgentLoop {
                             agentId, toolName, e.getMessage());
                         result = "Error: " + e.getMessage();
                     }
+
+                    // Persist tool_result event to JSONL
+                    sessionStore.appendTranscript(sessionId,
+                        new TranscriptEvent("tool_result", "user", result, null, toolId, null, java.time.Instant.now()));
 
                     // 记录工具调用
                     toolCalls.add(new ToolCallRecord(toolName, toolId, toolInput, result));

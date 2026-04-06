@@ -92,3 +92,5 @@ git submodule add https://github.com/shareAI-lab/claw0 vendors/claw0
 （8）@specs/enterprise-claw0/04-execution-plan/ 是claw0的企业级重写编码执行计划目录，包含所有编码执行计划文档。
 （9）@claw-4j/enterprise-claw-4j/ 是claw0的企业级重写项目代码目录，所有代码都在该目录下。
 现在你的任务是全方面深入检视 @claw-4j/enterprise-claw-4j 目录下的代码，检视项目是否符合企业级重写计划，深入检视代码的完成度、完整度、质量。执行过程中，有任何不明确的地方，通过向我提问的方式来获取、确认更多信息。
+
+最后再全面检视一遍 @claw-4j/enterprise-claw-4j 目录下的代码，确保功能完整，逻辑正确，能够正常运行且符合预期。

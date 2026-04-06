@@ -1,5 +1,9 @@
 package com.openclaw.enterprise.scheduler;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.time.Instant;
 
 /**
@@ -14,6 +18,7 @@ import java.time.Instant;
  *
  * <p>claw0 参考: s07_heartbeat_cron.py 第 130-180 行 CronJob</p>
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class CronJob {
 
     /** 连续错误自动禁用阈值 */
@@ -29,8 +34,13 @@ public class CronJob {
     private int errorCount = 0;
     private Instant lastRunAt;
 
-    public CronJob(String id, String label, CronSchedule schedule,
-                   CronPayload payload, boolean deleteAfterRun) {
+    @JsonCreator
+    public CronJob(
+            @JsonProperty("id") String id,
+            @JsonProperty("label") String label,
+            @JsonProperty("schedule") CronSchedule schedule,
+            @JsonProperty("payload") CronPayload payload,
+            @JsonProperty("deleteAfterRun") boolean deleteAfterRun) {
         this.id = id;
         this.label = label;
         this.schedule = schedule;

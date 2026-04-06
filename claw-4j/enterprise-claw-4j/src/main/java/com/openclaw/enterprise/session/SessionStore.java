@@ -78,24 +78,33 @@ public class SessionStore {
     /**
      * 创建新会话
      *
-     * <p>生成唯一会话 ID (格式: {@code sess_{uuid8}})，创建 JSONL 文件，
-     * 更新内存索引并持久化索引文件。</p>
+     * <p>生成唯一会话 ID (格式: {@code sess_{uuid32}})，创建 JSONL 文件，
+     * 更新内存索引并持久化索引文件。包含碰撞检测（最多 3 次尝试）。</p>
      *
      * @param agentId Agent ID
      * @param label   会话标签 (可为 null)
      * @return 新创建的会话 ID
      */
     public String createSession(String agentId, String label) {
-        // 生成会话 ID: sess_ + UUID 前 8 位
-        String sessionId = SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
-
-        Instant now = Instant.now();
-        SessionMeta meta = new SessionMeta(sessionId, agentId, label, now, now, 0);
-
         // 获取 Agent 级别锁
         ReentrantLock lock = agentLocks.computeIfAbsent(agentId, k -> new ReentrantLock());
         lock.lock();
         try {
+            // 生成会话 ID: sess_ + full UUID (32 hex chars)，带碰撞检测
+            String sessionId;
+            int attempts = 0;
+            do {
+                sessionId = SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
+                attempts++;
+            } while (Files.exists(resolveJsonlPath(agentId, sessionId)) && attempts < 3);
+
+            if (Files.exists(resolveJsonlPath(agentId, sessionId))) {
+                throw new RuntimeException("Failed to generate unique session ID after 3 attempts");
+            }
+
+            Instant now = Instant.now();
+            SessionMeta meta = new SessionMeta(sessionId, agentId, label, now, now, 0);
+
             // 创建 JSONL 文件
             Path jsonlPath = resolveJsonlPath(agentId, sessionId);
             Files.createDirectories(jsonlPath.getParent());
@@ -111,7 +120,7 @@ public class SessionStore {
             log.info("Session created: {} for agent: {}", sessionId, agentId);
             return sessionId;
         } catch (IOException e) {
-            throw new RuntimeException("Failed to create session: " + sessionId, e);
+            throw new RuntimeException("Failed to create session", e);
         } finally {
             lock.unlock();
         }
@@ -136,13 +145,20 @@ public class SessionStore {
             return List.of();
         }
 
-        Path jsonlPath = resolveJsonlPath(agentId, sessionId);
-        if (!Files.exists(jsonlPath)) {
-            return List.of();
-        }
+        // 获取 Agent 级别锁，保证读取时不会被 appendTranscript 并发写入
+        ReentrantLock lock = agentLocks.computeIfAbsent(agentId, k -> new ReentrantLock());
+        lock.lock();
+        try {
+            Path jsonlPath = resolveJsonlPath(agentId, sessionId);
+            if (!Files.exists(jsonlPath)) {
+                return List.of();
+            }
 
-        List<TranscriptEvent> events = JsonUtils.readJsonl(jsonlPath, TranscriptEvent.class);
-        return rebuildHistory(events);
+            List<TranscriptEvent> events = JsonUtils.readJsonl(jsonlPath, TranscriptEvent.class);
+            return rebuildHistory(events);
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -195,6 +211,34 @@ public class SessionStore {
      */
     public Optional<SessionMeta> getSessionMeta(String sessionId) {
         return Optional.ofNullable(index.get(sessionId));
+    }
+
+    /**
+     * 加载会话的原始转录事件列表
+     *
+     * <p>读取 JSONL 文件，解析每行为 {@link TranscriptEvent}，直接返回原始事件列表。
+     * 用于 API 端点展示会话历史。</p>
+     *
+     * @param sessionId 会话 ID
+     * @return 转录事件列表，会话不存在时返回空列表
+     */
+    public List<TranscriptEvent> loadTranscriptEvents(String sessionId) {
+        String agentId = getAgentId(sessionId);
+        if (agentId == null) {
+            return List.of();
+        }
+
+        ReentrantLock lock = agentLocks.computeIfAbsent(agentId, k -> new ReentrantLock());
+        lock.lock();
+        try {
+            Path jsonlPath = resolveJsonlPath(agentId, sessionId);
+            if (!Files.exists(jsonlPath)) {
+                return List.of();
+            }
+            return JsonUtils.readJsonl(jsonlPath, TranscriptEvent.class);
+        } finally {
+            lock.unlock();
+        }
     }
 
     // ==================== 历史重建 ====================

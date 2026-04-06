@@ -8,6 +8,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -32,6 +33,9 @@ public class ChannelManager {
 
     /** 渠道名称 → 渠道实例的映射 */
     private final Map<String, Channel> channels = new ConcurrentHashMap<>();
+
+    /** 已停止接收的渠道名称集合 */
+    private final Set<String> stoppedChannels = ConcurrentHashMap.newKeySet();
 
     /**
      * 构造渠道管理器
@@ -81,21 +85,26 @@ public class ChannelManager {
     /**
      * 停止所有渠道的消息接收
      *
-     * <p>在应用关闭时调用，通知所有渠道停止接收新消息。</p>
+     * <p>在应用关闭时调用，通知所有渠道停止接收新消息。
+     * 不会移除渠道注册 — 那是 closeAll 的职责。</p>
      */
     public void stopReceiving() {
-        channels.values().forEach(Channel::close);
-        log.info("All channels stopped receiving");
+        channels.forEach((name, channel) -> {
+            channel.close();
+            stoppedChannels.add(name);
+        });
+        log.info("All channels stopped receiving ({} channels)", stoppedChannels.size());
     }
 
     /**
      * 关闭所有渠道连接
      *
-     * <p>在应用关闭时调用，释放所有渠道资源。</p>
+     * <p>先停止接收，再清空渠道注册表，释放所有渠道资源。</p>
      */
     public void closeAll() {
-        channels.values().forEach(Channel::close);
+        stopReceiving();
         channels.clear();
+        stoppedChannels.clear();
         log.info("All channels closed");
     }
 }

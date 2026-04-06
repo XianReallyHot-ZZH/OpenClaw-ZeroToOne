@@ -17,6 +17,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
 /**
@@ -50,10 +51,17 @@ public class DeliveryQueue {
 
     private final Path pendingDir;
     private final Path failedDir;
+    private final int backoffBaseSeconds;
+    private final double backoffMultiplier;
+    private final double jitterFactor;
 
-    public DeliveryQueue(AppProperties.WorkspaceProperties workspaceProps) {
+    public DeliveryQueue(AppProperties.WorkspaceProperties workspaceProps,
+                         AppProperties.DeliveryProperties deliveryProps) {
         this.pendingDir = workspaceProps.path().resolve("delivery-queue/pending");
         this.failedDir = workspaceProps.path().resolve("delivery-queue/failed");
+        this.backoffBaseSeconds = deliveryProps.backoffBaseSeconds();
+        this.backoffMultiplier = deliveryProps.backoffMultiplier();
+        this.jitterFactor = deliveryProps.jitterFactor();
     }
 
     /**
@@ -111,6 +119,8 @@ public class DeliveryQueue {
     /**
      * 标记投递失败 — 增加重试计数或移到 failed 目录
      *
+     * <p>指数退避 + 随机抖动：baseDelay * multiplier^retryCount * (1 ± jitterFactor)</p>
+     *
      * @param deliveryId 投递 ID
      * @param error      错误信息
      * @param maxRetries 最大重试次数
@@ -125,12 +135,13 @@ public class DeliveryQueue {
         try {
             String json = Files.readString(pendingFile);
             QueuedDelivery delivery = JsonUtils.fromJson(json, QueuedDelivery.class);
+            int nextRetryCount = delivery.retryCount() + 1;
 
-            if (delivery.retryCount() + 1 >= maxRetries) {
+            if (nextRetryCount >= maxRetries) {
                 // 重试耗尽: 移到 failed 目录
                 QueuedDelivery failedDelivery = new QueuedDelivery(
                     delivery.id(), delivery.channel(), delivery.to(), delivery.text(),
-                    delivery.createdAt(), delivery.retryCount() + 1,
+                    delivery.createdAt(), nextRetryCount,
                     null, error
                 );
                 Path failedFile = failedDir.resolve(deliveryId + ".json");
@@ -138,19 +149,39 @@ public class DeliveryQueue {
                 Files.deleteIfExists(pendingFile);
                 log.warn("Delivery exhausted retries, moved to failed: {}", deliveryId);
             } else {
-                // 增加重试计数，保持 pending
+                // 计算指数退避 + 抖动的下次重试时间
+                Instant nextRetryAt = calculateNextRetry(nextRetryCount);
+
                 QueuedDelivery updated = new QueuedDelivery(
                     delivery.id(), delivery.channel(), delivery.to(), delivery.text(),
-                    delivery.createdAt(), delivery.retryCount() + 1,
-                    null, error
+                    delivery.createdAt(), nextRetryCount,
+                    nextRetryAt, error
                 );
                 writeQueueFile(pendingFile, JsonUtils.toJson(updated), deliveryId);
-                log.debug("Delivery retry {} for {}: {}",
-                    delivery.retryCount() + 1, deliveryId, error);
+                log.debug("Delivery retry {} for {} (nextRetryAt={}): {}",
+                    nextRetryCount, deliveryId, nextRetryAt, error);
             }
         } catch (Exception e) {
             log.error("Failed to process delivery failure for {}", deliveryId, e);
         }
+    }
+
+    /**
+     * 计算下次重试时间 — 指数退避 + 随机抖动
+     *
+     * <p>公式: {@code base * multiplier^retryCount * (1 + random(-jitter, +jitter))}</p>
+     *
+     * @param retryCount 当前重试次数 (递增后)
+     * @return 下次重试时间
+     */
+    Instant calculateNextRetry(int retryCount) {
+        double baseDelay = backoffBaseSeconds * Math.pow(backoffMultiplier, retryCount);
+
+        // 添加 ±jitterFactor 比例的随机抖动
+        double jitter = baseDelay * jitterFactor * (2 * ThreadLocalRandom.current().nextDouble() - 1);
+        long delaySeconds = Math.max(1, Math.round(baseDelay + jitter));
+
+        return Instant.now().plusSeconds(delaySeconds);
     }
 
     /**

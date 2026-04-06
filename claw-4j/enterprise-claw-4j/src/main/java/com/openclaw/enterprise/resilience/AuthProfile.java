@@ -33,6 +33,9 @@ public class AuthProfile {
     /** 最近一次成功时间 */
     private volatile Instant lastGoodAt = Instant.now();
 
+    /** 缓存的 AnthropicClient 实例 — 避免每次调用都创建新客户端 */
+    private volatile AnthropicClient cachedClient;
+
     public AuthProfile(String name, String apiKey, String baseUrl) {
         this.name = name;
         this.apiKey = apiKey;
@@ -40,19 +43,27 @@ public class AuthProfile {
     }
 
     /**
-     * 创建 AnthropicClient 实例
+     * 获取或创建 AnthropicClient 实例
      *
-     * <p>使用此 Profile 的 apiKey 和可选 baseUrl 构建 SDK 客户端。</p>
+     * <p>使用此 Profile 的 apiKey 和可选 baseUrl 构建 SDK 客户端。
+     * 客户端实例会被缓存，避免每次调用都创建新客户端。</p>
      *
-     * @return 新的 AnthropicClient 实例
+     * @return AnthropicClient 实例 (缓存)
      */
     public AnthropicClient createClient() {
-        var builder = AnthropicOkHttpClient.builder()
-            .apiKey(apiKey);
-        if (baseUrl != null && !baseUrl.isBlank()) {
-            builder.baseUrl(baseUrl);
+        if (cachedClient == null) {
+            synchronized (this) {
+                if (cachedClient == null) {
+                    var builder = AnthropicOkHttpClient.builder()
+                        .apiKey(apiKey);
+                    if (baseUrl != null && !baseUrl.isBlank()) {
+                        builder.baseUrl(baseUrl);
+                    }
+                    cachedClient = builder.build();
+                }
+            }
         }
-        return builder.build();
+        return cachedClient;
     }
 
     /**

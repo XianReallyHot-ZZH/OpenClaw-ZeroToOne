@@ -13,6 +13,6 @@ package com.openclaw.enterprise.agent;
  * @param outputTokens 输出 token 数 (Claude 生成的文本 + 工具调用)
  */
 public record TokenUsage(
-    int inputTokens,
-    int outputTokens
+    long inputTokens,
+    long outputTokens
 ) {}

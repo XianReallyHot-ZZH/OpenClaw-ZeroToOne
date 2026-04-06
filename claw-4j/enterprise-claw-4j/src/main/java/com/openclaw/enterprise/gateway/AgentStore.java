@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Agent 配置持久化存储 — JSONL 格式的 Agent 配置持久层
@@ -25,6 +26,7 @@ public class AgentStore {
 
     private static final String STORE_FILE = "agents.jsonl";
 
+    private final ReentrantLock writeLock = new ReentrantLock();
     private final Path storePath;
     private final AgentManager agentManager;
 
@@ -68,10 +70,13 @@ public class AgentStore {
      */
     public void registerAndPersist(AgentConfig config) {
         agentManager.register(config);
+        writeLock.lock();
         try {
             JsonUtils.appendJsonl(storePath, config);
         } catch (Exception e) {
             log.error("Failed to persist agent: {}", config.id(), e);
+        } finally {
+            writeLock.unlock();
         }
     }
 
@@ -96,6 +101,7 @@ public class AgentStore {
      * 全量重写 JSONL 文件
      */
     private void rewriteStore() {
+        writeLock.lock();
         try {
             List<AgentConfig> all = agentManager.listAgents();
             String content = all.stream()
@@ -108,6 +114,8 @@ public class AgentStore {
             Files.writeString(storePath, content);
         } catch (Exception e) {
             log.error("Failed to rewrite agents store", e);
+        } finally {
+            writeLock.unlock();
         }
     }
 }

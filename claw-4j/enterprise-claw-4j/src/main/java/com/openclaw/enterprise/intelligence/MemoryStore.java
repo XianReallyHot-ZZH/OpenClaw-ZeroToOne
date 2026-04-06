@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 记忆存储 — 混合搜索 (TF-IDF 关键词 + Hash Vector，时间衰减，MMR 重排序)
@@ -55,8 +56,8 @@ public class MemoryStore {
     private final Path evergreenPath;
 
     /** 预加载的记忆缓存 */
-    private List<MemoryEntry> allEntries = new ArrayList<>();
-    private Map<String, Integer> cachedDf = new HashMap<>();
+    private List<MemoryEntry> allEntries = new CopyOnWriteArrayList<>();
+    private volatile Map<String, Integer> cachedDf = new HashMap<>();
 
     public MemoryStore(AppProperties.WorkspaceProperties workspaceProps) {
         this.memoryDir = workspaceProps.path().resolve("memory/daily");
@@ -68,7 +69,7 @@ public class MemoryStore {
      */
     @PostConstruct
     void preload() {
-        this.allEntries = loadAllMemories();
+        this.allEntries = new CopyOnWriteArrayList<>(loadAllMemories());
         this.cachedDf = buildDocumentFrequency(allEntries);
         log.info("Preloaded {} memory entries", allEntries.size());
     }
@@ -92,7 +93,8 @@ public class MemoryStore {
             // 增量更新内存缓存
             MemoryEntry memEntry = new MemoryEntry(content, category, Instant.now(), "daily", 0.0);
             allEntries.add(memEntry);
-            cachedDf = buildDocumentFrequency(allEntries);
+            Map<String, Integer> newDf = buildDocumentFrequency(allEntries);
+            cachedDf = newDf;
 
             log.debug("Memory written: {} (category={})", content.substring(0, Math.min(50, content.length())), category);
         } catch (Exception e) {
@@ -160,17 +162,24 @@ public class MemoryStore {
         return results.stream().limit(20).toList();
     }
 
+    /**
+     * Build a TF-IDF vector using df as the authoritative vocabulary.
+     *
+     * <p>All vectors share the same dimension = df.size(). Terms present in
+     * the token list but absent from df are ignored so that query and document
+     * vectors are always comparable via cosine similarity.</p>
+     */
     private double[] tfidf(String[] tokens, Map<String, Integer> df, int totalDocs) {
         // 词频
         Map<String, Integer> tf = new HashMap<>();
         for (String t : tokens) tf.merge(t, 1, Integer::sum);
 
-        double[] vec = new double[df.size() + tf.size()];
-        List<String> allTerms = new ArrayList<>(df.keySet());
-        tf.keySet().stream().filter(t -> !df.containsKey(t)).forEach(allTerms::add);
+        // Fixed vocabulary from df — terms not in df are ignored
+        List<String> vocab = new ArrayList<>(df.keySet());
+        double[] vec = new double[vocab.size()];
 
-        for (int i = 0; i < allTerms.size() && i < vec.length; i++) {
-            String term = allTerms.get(i);
+        for (int i = 0; i < vocab.size(); i++) {
+            String term = vocab.get(i);
             double tfVal = tf.getOrDefault(term, 0) / (double) tokens.length;
             int docFreq = df.getOrDefault(term, 0);
             double idfVal = Math.log((totalDocs + 1.0) / (1 + docFreq));

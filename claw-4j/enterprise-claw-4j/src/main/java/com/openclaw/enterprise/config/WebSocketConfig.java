@@ -1,7 +1,7 @@
 package com.openclaw.enterprise.config;
 
 import com.openclaw.enterprise.gateway.GatewayWebSocketHandler;
-import org.springframework.context.annotation.Bean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
@@ -16,16 +16,21 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
  */
 @Configuration
 @EnableWebSocket
+@EnableConfigurationProperties(AppProperties.CorsProperties.class)
 public class WebSocketConfig implements WebSocketConfigurer {
+
+    private final AppProperties.CorsProperties corsProperties;
+    private final GatewayWebSocketHandler handler;
+
+    public WebSocketConfig(AppProperties.CorsProperties corsProperties, GatewayWebSocketHandler handler) {
+        this.corsProperties = corsProperties;
+        this.handler = handler;
+    }
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(gatewayWebSocketHandler(), "/ws/gateway")
-            .setAllowedOrigins("*");
+        registry.addHandler(handler, "/ws/gateway")
+            .setAllowedOrigins(corsProperties.effectiveOrigins().toArray(new String[0]));
     }
 
-    @Bean
-    public GatewayWebSocketHandler gatewayWebSocketHandler() {
-        return new GatewayWebSocketHandler();
-    }
 }

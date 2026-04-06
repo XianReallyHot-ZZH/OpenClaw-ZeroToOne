@@ -27,6 +27,9 @@ public class BindingTable {
     /** 绑定规则列表 — CopyOnWriteArrayList 保证读多写少场景的线程安全 */
     private final List<Binding> bindings = new CopyOnWriteArrayList<>();
 
+    /** 排序缓存 — addBinding/removeBinding 时置 null，resolve 时惰性计算 */
+    private volatile List<Binding> sortedCache = null;
+
     /**
      * 解析路由 — 根据入站消息信息匹配最佳 Agent
      *
@@ -41,10 +44,16 @@ public class BindingTable {
      */
     public Optional<ResolvedBinding> resolve(String channel, String accountId,
                                               String guildId, String peerId) {
-        return bindings.stream()
-            .sorted(Comparator
-                .comparingInt(Binding::tier)
-                .thenComparing(Comparator.comparingInt(Binding::priority).reversed()))
+        List<Binding> sorted = sortedCache;
+        if (sorted == null) {
+            sorted = bindings.stream()
+                .sorted(Comparator
+                    .comparingInt(Binding::tier)
+                    .thenComparing(Comparator.comparingInt(Binding::priority).reversed()))
+                .toList();
+            sortedCache = sorted;
+        }
+        return sorted.stream()
             .filter(b -> matches(b, channel, accountId, guildId, peerId))
             .findFirst()
             .map(b -> new ResolvedBinding(b.agentId(), b));
@@ -57,6 +66,7 @@ public class BindingTable {
      */
     public void addBinding(Binding binding) {
         bindings.add(binding);
+        sortedCache = null;
         log.info("Binding added: tier={} key={} agent={}", binding.tier(), binding.key(), binding.agentId());
     }
 
@@ -71,6 +81,7 @@ public class BindingTable {
         boolean removed = bindings.removeIf(
             b -> b.tier() == tier && b.key().equals(key));
         if (removed) {
+            sortedCache = null;
             log.info("Binding removed: tier={} key={}", tier, key);
         }
         return removed;

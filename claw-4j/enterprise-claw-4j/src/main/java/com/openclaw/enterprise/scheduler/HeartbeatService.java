@@ -83,7 +83,7 @@ public class HeartbeatService {
      *
      * <p>fixedRateString 支持 Spring 属性占位符，默认 1800 秒 (30 分钟)。</p>
      */
-    @Scheduled(fixedRateString = "${heartbeat.interval-seconds:1800}000")
+    @Scheduled(fixedRateString = "#{${heartbeat.interval-seconds:1800} * 1000}")
     public void heartbeat() {
         // 前置检查 1: HEARTBEAT.md 是否存在
         Path heartbeatFile = workspacePath.resolve("HEARTBEAT.md");

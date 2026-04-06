@@ -1,18 +1,17 @@
 package com.openclaw.enterprise.gateway;
 
 import com.openclaw.enterprise.agent.AgentConfig;
-import com.openclaw.enterprise.agent.AgentLoop;
-import com.openclaw.enterprise.channel.InboundMessage;
 import com.openclaw.enterprise.session.SessionStore;
 import com.openclaw.enterprise.session.SessionMeta;
+import com.openclaw.enterprise.session.TranscriptEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 网关 REST 控制器 — 提供 HTTP API 接口
@@ -47,17 +46,17 @@ public class GatewayController {
     private final BindingTable bindingTable;
     private final BindingStore bindingStore;
     private final SessionStore sessionStore;
-    private final AgentLoop agentLoop;
+    private final GatewayService gatewayService;
 
     public GatewayController(AgentManager agentManager, AgentStore agentStore,
                              BindingTable bindingTable, BindingStore bindingStore,
-                             SessionStore sessionStore, AgentLoop agentLoop) {
+                             SessionStore sessionStore, GatewayService gatewayService) {
         this.agentManager = agentManager;
         this.agentStore = agentStore;
         this.bindingTable = bindingTable;
         this.bindingStore = bindingStore;
         this.sessionStore = sessionStore;
-        this.agentLoop = agentLoop;
+        this.gatewayService = gatewayService;
     }
 
     // ==================== Agent 管理 ====================
@@ -131,10 +130,19 @@ public class GatewayController {
     }
 
     @GetMapping("/sessions/{id}/history")
-    public ResponseEntity<List<Object>> getSessionHistory(@PathVariable String id) {
-        // 返回简化的历史记录
-        var messages = sessionStore.loadSession(id);
-        return ResponseEntity.ok(List.of(messages.toString()));
+    public ResponseEntity<Map<String, Object>> getSessionHistory(@PathVariable String id) {
+        var events = sessionStore.loadTranscriptEvents(id);
+
+        List<Map<String, String>> messageList = events.stream()
+            .filter(e -> e.role() != null && e.content() != null)
+            .map(e -> Map.of("role", e.role(), "content", e.content().toString()))
+            .collect(Collectors.toList());
+
+        return ResponseEntity.ok(Map.of(
+            "session_id", id,
+            "messages", messageList,
+            "total_count", messageList.size()
+        ));
     }
 
     // ==================== 消息发送 ====================
@@ -147,39 +155,22 @@ public class GatewayController {
         String peerId = body.getOrDefault("peer_id", "user");
         String guildId = body.get("guild_id");
 
-        // 路由解析
-        var resolved = bindingTable.resolve(channel, accountId, guildId, peerId)
-            .orElse(null);
+        try {
+            var routeResult = gatewayService.routeAndExecute(text, channel, accountId, peerId, guildId);
+            var result = routeResult.result();
 
-        if (resolved == null) {
+            return ResponseEntity.ok(Map.of(
+                "status", "ok",
+                "text", result.text(),
+                "agent_id", routeResult.agentId(),
+                "session_id", routeResult.sessionId(),
+                "stop_reason", result.stopReason()
+            ));
+        } catch (IllegalStateException e) {
             return ResponseEntity.badRequest()
                 .body(Map.of("error", Map.of("code", "NO_BINDING",
-                    "message", "No binding found for the given routing info")));
+                    "message", e.getMessage())));
         }
-
-        String agentId = resolved.agentId();
-
-        // 构建会话键
-        InboundMessage msg = new InboundMessage(text, peerId, channel,
-            accountId, peerId, guildId, guildId != null,
-            List.of(), null, Instant.now());
-        String sessionKey = agentManager.buildSessionKey(agentId, msg);
-
-        // 获取或创建会话
-        String sessionId = sessionStore.getSessionMeta(sessionKey)
-            .map(SessionMeta::sessionId)
-            .orElseGet(() -> sessionStore.createSession(agentId, sessionKey));
-
-        // 执行
-        var result = agentLoop.runTurn(agentId, sessionId, text);
-
-        return ResponseEntity.ok(Map.of(
-            "status", "ok",
-            "text", result.text(),
-            "agent_id", agentId,
-            "session_id", sessionId,
-            "stop_reason", result.stopReason()
-        ));
     }
 
     // ==================== 状态查询 ====================

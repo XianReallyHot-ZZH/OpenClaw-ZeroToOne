@@ -5,6 +5,7 @@ import com.openclaw.enterprise.channel.ChannelManager;
 import com.openclaw.enterprise.channel.InboundMessage;
 import com.openclaw.enterprise.session.SessionStore;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -146,6 +147,14 @@ public class MessagePumpService {
         } catch (Exception e) {
             log.error("Failed to route message from {}: {}", msg.peerId(), e.getMessage(), e);
         }
+    }
+
+    /**
+     * 停止消息泵 — 应用关闭时自动调用
+     */
+    @PreDestroy
+    void shutdown() {
+        stop();
     }
 
     /**

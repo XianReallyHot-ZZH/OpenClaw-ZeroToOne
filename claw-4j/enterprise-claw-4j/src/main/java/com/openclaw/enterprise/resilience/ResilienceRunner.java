@@ -2,6 +2,7 @@ package com.openclaw.enterprise.resilience;
 
 import com.openclaw.enterprise.agent.AgentLoop;
 import com.openclaw.enterprise.agent.AgentTurnResult;
+import com.openclaw.enterprise.config.AppProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -30,7 +31,11 @@ public class ResilienceRunner {
 
     private static final Logger log = LoggerFactory.getLogger(ResilienceRunner.class);
 
+    /** Fallback model used when all profiles are exhausted */
+    private static final String FALLBACK_MODEL = "claude-haiku-4-20250514";
+
     private final ProfileManager profileManager;
+    private final AppProperties.AnthropicProperties anthropicProps;
 
     /** 基础重试次数 */
     private static final int BASE_RETRY = 3;
@@ -39,8 +44,10 @@ public class ResilienceRunner {
     /** 最大迭代次数上限 */
     private static final int MAX_ITERATIONS = 160;
 
-    public ResilienceRunner(ProfileManager profileManager) {
+    public ResilienceRunner(ProfileManager profileManager,
+                            AppProperties.AnthropicProperties anthropicProps) {
         this.profileManager = profileManager;
+        this.anthropicProps = anthropicProps;
     }
 
     /**
@@ -124,18 +131,24 @@ public class ResilienceRunner {
      */
     private AgentTurnResult attemptFallbackModel(String agentId, String sessionId,
                                                   String userMessage, AgentLoop agentLoop) {
-        // 尝试使用任意 Profile (即使冷却中)
+        String currentModel = anthropicProps.modelId();
+        String fallbackModel = FALLBACK_MODEL;
+        log.warn("Degradation: switching model from '{}' to fallback '{}' for agent '{}'",
+            currentModel, fallbackModel, agentId);
+
+        // 尝试使用任意 Profile (即使冷却中) + 降级模型
         for (AuthProfile profile : profileManager.getProfiles()) {
             try {
-                log.info("Attempting fallback with profile '{}' and degraded model", profile.getName());
+                log.info("Attempting fallback with profile '{}' and degraded model '{}'",
+                    profile.getName(), fallbackModel);
                 var client = profile.createClient();
-                // AgentLoop 使用注入的 client 进行调用
-                // 注意: 模型降级需要在 AgentLoop 层面支持，此处先尝试正常调用
-                AgentTurnResult result = agentLoop.runTurn(agentId, sessionId, userMessage, client);
+                AgentTurnResult result = agentLoop.runTurn(
+                    agentId, sessionId, userMessage, client, fallbackModel);
                 profileManager.markSuccess(profile);
                 return result;
             } catch (Exception e) {
-                log.warn("Fallback with profile '{}' also failed: {}", profile.getName(), e.getMessage());
+                log.warn("Fallback with profile '{}' and model '{}' also failed: {}",
+                    profile.getName(), fallbackModel, e.getMessage());
             }
         }
 

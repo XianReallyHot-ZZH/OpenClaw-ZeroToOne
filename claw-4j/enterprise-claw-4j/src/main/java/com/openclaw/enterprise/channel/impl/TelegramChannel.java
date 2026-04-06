@@ -102,8 +102,10 @@ public class TelegramChannel implements Channel {
 
     @Override
     public boolean send(String to, String text) {
+        // 转义 Markdown 特殊字符
+        String escaped = escapeMarkdown(text);
         // 超长消息分段发送
-        List<String> chunks = chunkMessage(text);
+        List<String> chunks = chunkMessage(escaped);
         for (String chunk : chunks) {
             if (!sendSingleMessage(to, chunk)) {
                 return false;
@@ -244,6 +246,27 @@ public class TelegramChannel implements Channel {
             log.error("Telegram send error", e);
             return false;
         }
+    }
+
+    /**
+     * 转义 Telegram MarkdownV2 特殊字符
+     *
+     * <p>转义以下字符：{@code _ * ` [ ] ( ) ~ > # + - = | { } . !}</p>
+     *
+     * @param text 原始文本
+     * @return 转义后的文本
+     */
+    static String escapeMarkdown(String text) {
+        StringBuilder sb = new StringBuilder(text.length() * 2);
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            switch (c) {
+                case '_', '*', '`', '[', ']', '(', ')', '~', '>', '#',
+                     '+', '-', '=', '|', '{', '}', '.', '!' -> sb.append('\\').append(c);
+                default -> sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     /**

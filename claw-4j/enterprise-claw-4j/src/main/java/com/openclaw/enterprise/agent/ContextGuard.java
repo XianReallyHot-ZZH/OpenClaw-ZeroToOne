@@ -149,7 +149,7 @@ public class ContextGuard {
                         }
                     } else {
                         // 保持原样
-                        break;
+                        continue;
                     }
                 }
 

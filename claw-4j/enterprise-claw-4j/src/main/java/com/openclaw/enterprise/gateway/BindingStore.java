@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 绑定规则持久化存储 — JSONL 格式的绑定规则持久层
@@ -26,6 +27,7 @@ public class BindingStore {
 
     private static final String STORE_FILE = "bindings.jsonl";
 
+    private final ReentrantLock writeLock = new ReentrantLock();
     private final Path storePath;
     private final BindingTable bindingTable;
 
@@ -87,10 +89,13 @@ public class BindingStore {
      * 追加一条绑定到 JSONL 文件
      */
     private void appendToStore(Binding binding) {
+        writeLock.lock();
         try {
             JsonUtils.appendJsonl(storePath, binding);
         } catch (Exception e) {
             log.error("Failed to persist binding", e);
+        } finally {
+            writeLock.unlock();
         }
     }
 
@@ -98,6 +103,7 @@ public class BindingStore {
      * 全量重写 JSONL 文件 (删除操作后)
      */
     private void rewriteStore() {
+        writeLock.lock();
         try {
             List<Binding> all = bindingTable.listBindings();
             String content = all.stream()
@@ -110,6 +116,8 @@ public class BindingStore {
             Files.writeString(storePath, content);
         } catch (Exception e) {
             log.error("Failed to rewrite bindings store", e);
+        } finally {
+            writeLock.unlock();
         }
     }
 }

@@ -3,12 +3,18 @@ package com.openclaw.enterprise.channel.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.openclaw.enterprise.channel.InboundMessage;
 import com.openclaw.enterprise.channel.MediaAttachment;
+import com.openclaw.enterprise.config.AppProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import jakarta.servlet.http.HttpServletRequest;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -38,13 +44,24 @@ public class FeishuWebhookController {
 
     private final FeishuChannel feishuChannel;
 
+    /** Webhook 签名验证密钥 (verificationToken 或 appSecret 作为回退) */
+    private final String verificationKey;
+
     /**
      * 构造飞书 Webhook 控制器
      *
      * @param feishuChannel 飞书渠道实例 (用于推送消息到内部队列)
+     * @param channelProps  渠道配置 (用于获取签名验证密钥)
      */
-    public FeishuWebhookController(FeishuChannel feishuChannel) {
+    public FeishuWebhookController(FeishuChannel feishuChannel,
+                                   AppProperties.ChannelProperties channelProps) {
         this.feishuChannel = feishuChannel;
+        // 优先使用 verificationToken，回退到 appSecret
+        String key = channelProps.feishu().verificationToken();
+        if (key == null || key.isBlank()) {
+            key = channelProps.feishu().appSecret();
+        }
+        this.verificationKey = (key != null && !key.isBlank()) ? key : null;
     }
 
     /**
@@ -56,11 +73,25 @@ public class FeishuWebhookController {
      *   <li>{@code "event_callback"} — 消息事件，解析后推送到 FeishuChannel</li>
      * </ul>
      *
+     * <p>签名验证：通过 {@link #verifySignature} 验证请求来源合法性，
+     * 未配置验证密钥时跳过验证（开发模式）。</p>
+     *
      * @param payload 飞书推送的 JSON 事件
+     * @param request HTTP 原始请求 (用于签名验证)
      * @return 处理结果
      */
     @PostMapping
-    public ResponseEntity<?> handleEvent(@RequestBody JsonNode payload) {
+    public ResponseEntity<?> handleEvent(@RequestBody JsonNode payload,
+                                         HttpServletRequest request) {
+        // 读取原始请求体用于签名验证
+        String body = payload.toString();
+
+        // 签名验证
+        if (!verifySignature(request, body)) {
+            log.warn("Feishu webhook signature verification failed");
+            return ResponseEntity.status(401).body(Map.of("error", "signature verification failed"));
+        }
+
         String type = payload.has("type") ? payload.get("type").asText() : "";
 
         // URL 验证挑战
@@ -180,6 +211,67 @@ public class FeishuWebhookController {
         } catch (Exception e) {
             log.warn("Failed to parse Feishu message content: {}", e.getMessage());
             return null;
+        }
+    }
+
+    // ==================== 签名验证 ====================
+
+    /**
+     * 验证飞书 Webhook 请求签名
+     *
+     * <p>飞书使用 HMAC-SHA256 签名验证请求来源的合法性：</p>
+     * <ol>
+     *   <li>从请求头获取 {@code X-Lark-Signature} 和 {@code X-Lark-Request-Timestamp}</li>
+     *   <li>以验证密钥为 key，对 {@code timestamp + "\\n" + body} 计算 HMAC-SHA256</li>
+     *   <li>将计算结果与 {@code X-Lark-Signature} 进行常量时间比较</li>
+     * </ol>
+     *
+     * <p>如果未配置验证密钥 (verificationToken 或 appSecret)，则跳过验证（开发模式）。</p>
+     *
+     * @param request HTTP 请求
+     * @param body    请求体字符串
+     * @return 签名有效或未配置验证密钥时返回 true；签名无效返回 false
+     */
+    private boolean verifySignature(HttpServletRequest request, String body) {
+        // 未配置验证密钥，跳过验证（开发模式）
+        if (verificationKey == null) {
+            log.debug("Feishu webhook verification key not configured, skipping signature check");
+            return true;
+        }
+
+        String signature = request.getHeader("X-Lark-Signature");
+        String timestamp = request.getHeader("X-Lark-Request-Timestamp");
+
+        if (signature == null || timestamp == null) {
+            log.warn("Feishu webhook missing signature headers (X-Lark-Signature or X-Lark-Request-Timestamp)");
+            return false;
+        }
+
+        try {
+            // 构造签名内容: timestamp + "\n" + body
+            String contentToSign = timestamp + "\n" + body;
+
+            // HMAC-SHA256 计算
+            Mac mac = Mac.getInstance("HmacSHA256");
+            SecretKeySpec keySpec = new SecretKeySpec(
+                verificationKey.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
+            mac.init(keySpec);
+            byte[] hmacBytes = mac.doFinal(contentToSign.getBytes(StandardCharsets.UTF_8));
+
+            // 转为十六进制字符串
+            StringBuilder hexBuilder = new StringBuilder(hmacBytes.length * 2);
+            for (byte b : hmacBytes) {
+                hexBuilder.append(String.format("%02x", b));
+            }
+            String computedSignature = hexBuilder.toString();
+
+            // 常量时间比较，防止时序攻击
+            return MessageDigest.isEqual(
+                computedSignature.getBytes(StandardCharsets.UTF_8),
+                signature.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            log.error("Feishu webhook signature verification error", e);
+            return false;
         }
     }
 }
