@@ -1,0 +1,35 @@
+# Maven
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 环境配置 (含 API Key)
+.env
+.env.*
+
+# 运行时数据
+workspace/.sessions/
+workspace/memory/
+workspace/delivery-queue/
+workspace/cron/
+workspace/logs/
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+*.bak
+*~
