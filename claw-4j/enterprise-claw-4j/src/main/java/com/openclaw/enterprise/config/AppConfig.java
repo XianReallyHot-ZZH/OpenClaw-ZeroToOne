@@ -34,7 +34,8 @@ import java.util.List;
     HeartbeatProperties.class,
     ChannelProperties.class,
     WorkspaceProperties.class,
-    DeliveryProperties.class
+    DeliveryProperties.class,
+    ConcurrencyProperties.class
 })
 public class AppConfig {
 
