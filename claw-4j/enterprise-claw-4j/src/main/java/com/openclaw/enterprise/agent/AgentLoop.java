@@ -75,7 +75,7 @@ public class AgentLoop {
     }
 
     /**
-     * 执行一轮 Agent 对话
+     * 执行一轮 Agent 对话 (使用默认客户端)
      *
      * <p>将用户消息加入消息列表，然后进入工具调用循环，
      * 直到 Claude 返回 end_turn 或达到停止条件。</p>
@@ -86,6 +86,23 @@ public class AgentLoop {
      * @return 本轮对话的完整结果
      */
     public AgentTurnResult runTurn(String agentId, String sessionId, String userMessage) {
+        return runTurn(agentId, sessionId, userMessage, this.client);
+    }
+
+    /**
+     * 执行一轮 Agent 对话 (使用外部注入的客户端)
+     *
+     * <p>用于 Sprint 6 的 ResilienceRunner 在 Auth Profile 轮转时
+     * 注入不同的 AnthropicClient。</p>
+     *
+     * @param agentId     Agent ID
+     * @param sessionId   会话 ID
+     * @param userMessage 用户消息
+     * @param client      外部注入的 AnthropicClient
+     * @return 本轮对话的完整结果
+     */
+    public AgentTurnResult runTurn(String agentId, String sessionId,
+                                   String userMessage, AnthropicClient client) {
         log.debug("[{}] Starting turn for session {}", agentId, sessionId);
 
         // 1. 从 JSONL 加载会话历史
@@ -101,8 +118,8 @@ public class AgentLoop {
             .content(userMessage)
             .build());
 
-        // 4. 进入工具调用循环
-        AgentTurnResult result = processToolUseLoop(agentId, sessionId, messages);
+        // 4. 进入工具调用循环 (使用注入的客户端)
+        AgentTurnResult result = processToolUseLoop(agentId, sessionId, messages, client);
 
         // 5. 持久化助手回复到 JSONL
         if (result.text() != null && !result.text().isEmpty()) {
@@ -127,6 +144,15 @@ public class AgentLoop {
      */
     public AgentTurnResult runTurn(String agentId, String sessionId,
                                    List<MessageParam> messages, String userMessage) {
+        return runTurn(agentId, sessionId, messages, userMessage, this.client);
+    }
+
+    /**
+     * 执行一轮 Agent 对话 (带已有消息历史 + 外部客户端)
+     */
+    public AgentTurnResult runTurn(String agentId, String sessionId,
+                                   List<MessageParam> messages, String userMessage,
+                                   AnthropicClient client) {
         log.debug("[{}] Starting turn for session {} (with history, {} messages)",
             agentId, sessionId, messages.size());
 
@@ -140,7 +166,7 @@ public class AgentLoop {
             .content(userMessage)
             .build());
 
-        return processToolUseLoop(agentId, sessionId, messages);
+        return processToolUseLoop(agentId, sessionId, messages, client);
     }
 
     /**
@@ -162,12 +188,14 @@ public class AgentLoop {
      * stop_reason 分支处理</p>
      *
      * @param agentId   Agent ID (用于日志)
+     * @param agentId   Agent ID (用于日志)
      * @param sessionId 会话 ID (用于 JSONL 持久化)
      * @param messages  消息列表 (会被修改 — 追加助手消息和工具结果)
      * @return 对话结果
      */
     private AgentTurnResult processToolUseLoop(String agentId, String sessionId,
-                                               List<MessageParam> messages) {
+                                               List<MessageParam> messages,
+                                               AnthropicClient client) {
         List<ToolCallRecord> toolCalls = new ArrayList<>();
         int totalInputTokens = 0;
         int totalOutputTokens = 0;
