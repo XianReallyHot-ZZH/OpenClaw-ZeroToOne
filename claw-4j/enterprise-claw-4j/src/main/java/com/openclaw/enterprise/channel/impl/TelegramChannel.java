@@ -225,7 +225,7 @@ public class TelegramChannel implements Channel {
             String body = objectMapper.writeValueAsString(Map.of(
                 "chat_id", chatId,
                 "text", text,
-                "parse_mode", "Markdown"
+                "parse_mode", "MarkdownV2"
             ));
 
             HttpRequest request = HttpRequest.newBuilder()

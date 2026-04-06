@@ -54,10 +54,10 @@ public class FeishuChannel implements Channel {
     private final String appSecret;
 
     /** 当前有效的 tenant_access_token */
-    private String tenantToken;
+    private volatile String tenantToken;
 
     /** token 过期时间 */
-    private Instant tokenExpiresAt;
+    private volatile Instant tokenExpiresAt;
 
     /** 内部消息队列 — Webhook 推送写入，receive() 读取 */
     private final BlockingQueue<InboundMessage> messageQueue = new LinkedBlockingQueue<>();
