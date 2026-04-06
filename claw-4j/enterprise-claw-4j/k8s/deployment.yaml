@@ -1,0 +1,86 @@
+# ============================================================
+# enterprise-claw-4j — Kubernetes 部署配置
+# ============================================================
+# 注意: 单实例部署 (replicas: 1)
+# 原因: JSONL 文件系统存储不支持多副本并发写入
+# 多实例需要迁移到外部存储 (Redis/DB)
+# ============================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claw4j
+  labels:
+    app: claw4j
+spec:
+  replicas: 1  # JSONL 存储要求单实例
+  selector:
+    matchLabels:
+      app: claw4j
+  template:
+    metadata:
+      labels:
+        app: claw4j
+    spec:
+      containers:
+        - name: claw4j
+          image: openclaw/enterprise-claw-4j:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: SERVER_SHUTDOWN
+              value: "graceful"
+            - name: SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE
+              value: "30s"
+          envFrom:
+            - secretRef:
+                name: claw4j-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: workspace
+              mountPath: /app/workspace
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: claw4j-workspace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claw4j
+spec:
+  selector:
+    app: claw4j
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claw4j-workspace
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

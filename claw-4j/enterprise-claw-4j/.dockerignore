@@ -1,0 +1,39 @@
+# 构建产物
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# 敏感文件
+.env
+.env.*
+*.key
+*.pem
+
+# 版本控制
+.git/
+.gitignore
+
+# 文档
+*.md
+docs/
+
+# 日志
+*.log
+workspace/logs/
+
+# 运行时数据 (不应打包进镜像)
+workspace/.sessions/
+workspace/memory/
+workspace/delivery-queue/
+workspace/cron/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+Thumbs.db

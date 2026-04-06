@@ -11,6 +11,7 @@ import com.openclaw.enterprise.session.TranscriptEvent;
 import com.openclaw.enterprise.tool.ToolDefinition;
 import com.openclaw.enterprise.tool.ToolRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -52,6 +53,7 @@ public class AgentLoop {
     private final AppProperties.AnthropicProperties anthropicProps;
     private final SessionStore sessionStore;
     private final ContextGuard contextGuard;
+    private final MeterRegistry meterRegistry;
 
     /**
      * 构造 Agent 循环服务
@@ -61,17 +63,20 @@ public class AgentLoop {
      * @param anthropicProps Anthropic 配置属性
      * @param sessionStore   会话持久化存储 (Sprint 2)
      * @param contextGuard   上下文守卫 (Sprint 2)
+     * @param meterRegistry  Micrometer 指标注册表 (Sprint 7)
      */
     public AgentLoop(AnthropicClient client,
                      ToolRegistry toolRegistry,
                      AppProperties.AnthropicProperties anthropicProps,
                      SessionStore sessionStore,
-                     ContextGuard contextGuard) {
+                     ContextGuard contextGuard,
+                     MeterRegistry meterRegistry) {
         this.client = client;
         this.toolRegistry = toolRegistry;
         this.anthropicProps = anthropicProps;
         this.sessionStore = sessionStore;
         this.contextGuard = contextGuard;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -334,12 +339,54 @@ public class AgentLoop {
             break;
         }
 
-        return new AgentTurnResult(
+        AgentTurnResult result = new AgentTurnResult(
             finalText,
             toolCalls,
             lastStopReason,
             new TokenUsage(totalInputTokens, totalOutputTokens)
         );
+
+        // Sprint 7: 记录自定义指标
+        recordMetrics(result, agentId);
+
+        return result;
+    }
+
+    /**
+     * 记录 Agent 循环的自定义 Micrometer 指标
+     *
+     * <p>指标：</p>
+     * <ul>
+     *   <li>{@code claw4j.agent.turns} — Agent 调用次数计数器 (按 agent_id, stop_reason 分组)</li>
+     *   <li>{@code claw4j.api.tokens.input} — 输入 Token 消耗 (按 model 分组)</li>
+     *   <li>{@code claw4j.api.tokens.output} — 输出 Token 消耗 (按 model 分组)</li>
+     * </ul>
+     */
+    private void recordMetrics(AgentTurnResult result, String agentId) {
+        if (meterRegistry == null) return;
+
+        try {
+            // Agent 调用计数
+            io.micrometer.core.instrument.Counter.builder("claw4j.agent.turns")
+                .tag("agent_id", agentId)
+                .tag("stop_reason", result.stopReason())
+                .register(meterRegistry)
+                .increment();
+
+            // Token 消耗
+            String model = anthropicProps.modelId();
+            io.micrometer.core.instrument.Counter.builder("claw4j.api.tokens.input")
+                .tag("model", model)
+                .register(meterRegistry)
+                .increment(result.tokenUsage().inputTokens());
+
+            io.micrometer.core.instrument.Counter.builder("claw4j.api.tokens.output")
+                .tag("model", model)
+                .register(meterRegistry)
+                .increment(result.tokenUsage().outputTokens());
+        } catch (Exception e) {
+            log.debug("Failed to record metrics: {}", e.getMessage());
+        }
     }
 
     /**

@@ -1,0 +1,45 @@
+# ============================================================
+# enterprise-claw-4j — Docker Compose 部署配置
+# ============================================================
+# 使用方式:
+#   1. 复制 .env.example 为 .env 并填写配置
+#   2. docker compose up -d
+#   3. 访问 http://localhost:8080/actuator/health 检查状态
+# ============================================================
+
+services:
+  claw4j:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openclaw/enterprise-claw-4j:latest
+    container_name: claw4j
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      - SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE=30s
+      - SERVER_SHUTDOWN=graceful
+      - JAVA_OPTS=-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+    volumes:
+      # 工作空间持久化 — 挂载到命名卷
+      - claw4j-workspace:/app/workspace
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  claw4j-workspace:
+    driver: local
