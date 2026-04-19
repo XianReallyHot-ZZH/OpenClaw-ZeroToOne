@@ -604,6 +604,42 @@ public class S03Sessions {
         }
 
         /**
+         * 遍历消息列表, 截断过大的 tool_result 块.
+         * 通过 JSON 序列化/反序列化来修改不可变的 SDK 对象.
+         */
+        @SuppressWarnings("unchecked")
+        List<MessageParam> truncateLargeToolResults(List<MessageParam> messages) {
+            List<MessageParam> result = new ArrayList<>();
+            for (MessageParam msg : messages) {
+                String json = JsonUtils.toJson(msg);
+                Map<String, Object> map = JsonUtils.toMap(json);
+                Object content = map.get("content");
+                boolean modified = false;
+
+                if (content instanceof List<?> blocks) {
+                    for (Object block : blocks) {
+                        if (block instanceof Map<?, ?> m
+                                && "tool_result".equals(m.get("type"))
+                                && m.get("content") instanceof String text) {
+                            String truncated = truncateToolResult(text, 0.3);
+                            if (truncated.length() < text.length()) {
+                                ((Map<String, Object>) block).put("content", truncated);
+                                modified = true;
+                            }
+                        }
+                    }
+                }
+
+                if (modified) {
+                    result.add(JsonUtils.fromJson(JsonUtils.toJson(map), MessageParam.class));
+                } else {
+                    result.add(msg);
+                }
+            }
+            return result;
+        }
+
+        /**
          * 压缩对话历史: 将前 50% 的消息让 LLM 生成摘要, 替换为一条 summary 消息.
          *
          * <p>压缩策略:
@@ -726,8 +762,7 @@ public class S03Sessions {
                         System.out.println(AnsiColors.YELLOW
                                 + "  [guard] Context overflow detected, "
                                 + "truncating large tool results..." + AnsiColors.RESET);
-                        // For now, just try compacting next
-                        currentMessages = new ArrayList<>(currentMessages);
+                        currentMessages = truncateLargeToolResults(currentMessages);
                     } else if (attempt == 1) {
                         System.out.println(AnsiColors.YELLOW
                                 + "  [guard] Still overflowing, "
