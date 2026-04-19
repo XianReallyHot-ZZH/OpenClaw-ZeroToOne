@@ -137,7 +137,7 @@ public class S01AgentLoop {
                 //   tool_use  = 模型想调用工具 (本节暂不处理)
                 StopReason reason = response.stopReason().orElse(null);
 
-                if (reason == StopReason.END_TURN) {
+                if (StopReason.END_TURN.equals(reason)) {
                     // 模型正常结束: 提取文本内容并打印, 同时将完整回复加入历史以保持上下文
                     String assistantText = response.content().stream()
                             .filter(ContentBlock::isText)
@@ -150,7 +150,7 @@ public class S01AgentLoop {
                     // 这是保持对话状态的关键步骤: 下次调用 API 时模型能看到自己的历史回复
                     messages.add(response.toParam());
 
-                } else if (reason == StopReason.TOOL_USE) {
+                } else if (StopReason.TOOL_USE.equals(reason)) {
                     AnsiColors.printInfo("[stop_reason=tool_use] No tools available in this section.");
                     AnsiColors.printInfo("See S02ToolUse for tool support.");
                     messages.add(response.toParam());

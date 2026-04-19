@@ -459,7 +459,7 @@ public class S02ToolUse {
                 //   tool_use  = 模型想调用工具, 需要执行工具并把结果送回
                 StopReason reason = response.stopReason().orElse(null);
 
-                if (reason == StopReason.END_TURN) {
+                if (StopReason.END_TURN.equals(reason)) {
                     String assistantText = response.content().stream()
                             .filter(ContentBlock::isText)
                             .map(ContentBlock::asText)
@@ -470,7 +470,7 @@ public class S02ToolUse {
                     }
                     break;
 
-                } else if (reason == StopReason.TOOL_USE) {
+                } else if (StopReason.TOOL_USE.equals(reason)) {
                     // stop_reason == tool_use: 模型请求执行工具
                     // 注意: 工具结果必须作为 USER 角色消息发送 (API 要求),
                     // 因为从模型的视角看, 工具结果就像"用户提供了新信息"

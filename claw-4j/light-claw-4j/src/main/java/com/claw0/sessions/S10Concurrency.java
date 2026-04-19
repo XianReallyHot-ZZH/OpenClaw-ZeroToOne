@@ -1470,7 +1470,7 @@ public class S10Concurrency {
             messages.add(response.toParam());
             StopReason reason = response.stopReason().orElse(null);
 
-            if (reason == StopReason.END_TURN) {
+            if (StopReason.END_TURN.equals(reason)) {
                 // 步骤 3a: 正常结束 -- 提取所有 TextBlock, 拼接为最终回复
                 finalText = response.content().stream()
                         .filter(ContentBlock::isText)
@@ -1478,7 +1478,7 @@ public class S10Concurrency {
                         .map(TextBlock::text)
                         .collect(Collectors.joining());
                 break;
-            } else if (reason == StopReason.TOOL_USE) {
+            } else if (StopReason.TOOL_USE.equals(reason)) {
                 // 步骤 3b: 工具调用 -- 遍历所有 ToolUseBlock, 逐个执行并收集结果
                 List<ContentBlockParam> results = new ArrayList<>();
                 for (ContentBlock block : response.content()) {

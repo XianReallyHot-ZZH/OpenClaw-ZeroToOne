@@ -981,7 +981,7 @@ public class S03Sessions {
 
                 StopReason reason = response.stopReason().orElse(null);
 
-                if (reason == StopReason.END_TURN) {
+                if (StopReason.END_TURN.equals(reason)) {
                     String assistantText = response.content().stream()
                             .filter(ContentBlock::isText)
                             .map(ContentBlock::asText)
@@ -992,7 +992,7 @@ public class S03Sessions {
                     }
                     break;
 
-                } else if (reason == StopReason.TOOL_USE) {
+                } else if (StopReason.TOOL_USE.equals(reason)) {
                     List<ContentBlockParam> toolResultBlocks = new ArrayList<>();
                     for (ContentBlock block : response.content()) {
                         if (!block.isToolUse()) continue;

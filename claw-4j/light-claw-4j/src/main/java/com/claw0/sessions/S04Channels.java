@@ -864,7 +864,7 @@ public class S04Channels {
             messages.add(response.toParam());
             StopReason reason = response.stopReason().orElse(null);
 
-            if (reason == StopReason.END_TURN) {
+            if (StopReason.END_TURN.equals(reason)) {
                 String text = response.content().stream()
                         .filter(ContentBlock::isText)
                         .map(ContentBlock::asText)
@@ -876,7 +876,7 @@ public class S04Channels {
                     else AnsiColors.printAssistant(text);
                 }
                 break;
-            } else if (reason == StopReason.TOOL_USE) {
+            } else if (StopReason.TOOL_USE.equals(reason)) {
                 List<ContentBlockParam> toolResultBlocks = new ArrayList<>();
                 for (ContentBlock block : response.content()) {
                     if (!block.isToolUse()) continue;

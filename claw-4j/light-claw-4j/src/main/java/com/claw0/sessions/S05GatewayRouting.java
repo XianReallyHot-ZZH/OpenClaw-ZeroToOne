@@ -589,13 +589,13 @@ public class S05GatewayRouting {
             messages.add(response.toParam());
             StopReason reason = response.stopReason().orElse(null);
 
-            if (reason == StopReason.END_TURN) {
+            if (StopReason.END_TURN.equals(reason)) {
                 return response.content().stream()
                         .filter(ContentBlock::isText)
                         .map(ContentBlock::asText)
                         .map(TextBlock::text)
                         .collect(Collectors.joining());
-            } else if (reason == StopReason.TOOL_USE) {
+            } else if (StopReason.TOOL_USE.equals(reason)) {
                 List<ContentBlockParam> results = new ArrayList<>();
                 for (ContentBlock block : response.content()) {
                     if (!block.isToolUse()) continue;
