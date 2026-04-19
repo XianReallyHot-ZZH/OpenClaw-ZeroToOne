@@ -29,10 +29,10 @@ package com.claw0.sessions;
 
 // region Common Imports
 import com.claw0.common.AnsiColors;
+import com.claw0.common.Clients;
 import com.claw0.common.Config;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
@@ -100,10 +100,8 @@ public class S04Channels {
     /** 记忆文件: agent 的长期记忆存储, 使用 Markdown 格式便于人眼阅读 */
     static final Path MEMORY_FILE = WORKSPACE_DIR.resolve("MEMORY.md");
 
-    /** Anthropic API 客户端: 通过 ANTHROPIC_API_KEY 环境变量自动认证 */
-    static final AnthropicClient client = AnthropicOkHttpClient.builder()
-            .fromEnv()
-            .build();
+    /** Anthropic API 客户端: 通过 Config 读取 API Key 和 Base URL */
+    static final AnthropicClient client = Clients.create();
     // endregion
 
     // ================================================================

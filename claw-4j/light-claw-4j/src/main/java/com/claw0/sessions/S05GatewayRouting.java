@@ -51,11 +51,11 @@ package com.claw0.sessions;
 
 // region Common Imports
 import com.claw0.common.AnsiColors;
+import com.claw0.common.Clients;
 import com.claw0.common.Config;
 import com.claw0.common.JsonUtils;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
@@ -115,9 +115,7 @@ public class S05GatewayRouting {
     static final Path AGENTS_DIR = WORKSPACE_DIR.resolve(".agents");
 
     /** Anthropic API 客户端: 所有 agent 共享同一个客户端实例 (线程安全) */
-    static final AnthropicClient client = AnthropicOkHttpClient.builder()
-            .fromEnv()
-            .build();
+    static final AnthropicClient client = Clients.create();
 
     /**
      * Agent ID 校验正则: 小写字母数字开头, 允许连字符和下划线, 最长 64 字符.

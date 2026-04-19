@@ -41,10 +41,10 @@ package com.claw0.sessions;
 // region Common Imports
 import com.claw0.common.AnsiColors;
 import com.claw0.common.Config;
+import com.claw0.common.Clients;
 import com.claw0.common.JsonUtils;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
@@ -586,9 +586,7 @@ public class S09Resilience {
                 }
 
                 // 为该 profile 创建客户端
-                AnthropicClient apiClient = AnthropicOkHttpClient.builder()
-                        .apiKey(profile.apiKey)
-                        .build();
+                AnthropicClient apiClient = Clients.create(profile.apiKey);
 
                 // ---- LAYER 2: Overflow Recovery ----
                 List<MessageParam> layer2Messages = new ArrayList<>(currentMessages);
@@ -657,9 +655,7 @@ public class S09Resilience {
                     if (profile == null) continue;
 
                     printResilience("Fallback: model='" + fallbackModel + "', profile='" + profile.name + "'");
-                    AnthropicClient apiClient = AnthropicOkHttpClient.builder()
-                            .apiKey(profile.apiKey)
-                            .build();
+                    AnthropicClient apiClient = Clients.create(profile.apiKey);
 
                     try {
                         totalAttempts++;

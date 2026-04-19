@@ -38,10 +38,10 @@ package com.claw0.sessions;
 
 // region Common Imports
 import com.claw0.common.AnsiColors;
+import com.claw0.common.Clients;
 import com.claw0.common.Config;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
@@ -93,10 +93,8 @@ public class S02ToolUse {
     /** 工作目录: 所有文件操作都限制在此目录下 (安全沙箱) */
     static final Path WORKDIR = Path.of(System.getProperty("user.dir"));
 
-    /** Anthropic API 客户端, 自动从环境变量读取 ANTHROPIC_API_KEY */
-    static final AnthropicClient client = AnthropicOkHttpClient.builder()
-            .fromEnv()
-            .build();
+    /** Anthropic API 客户端, 通过 Config 读取 API Key 和 Base URL */
+    static final AnthropicClient client = Clients.create();
     // endregion
 
     // ================================================================

@@ -33,10 +33,10 @@ package com.claw0.sessions;
 
 // region Common Imports
 import com.claw0.common.AnsiColors;
+import com.claw0.common.Clients;
 import com.claw0.common.Config;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.MessageCreateParams;
@@ -59,13 +59,10 @@ public class S01AgentLoop {
     static final String SYSTEM_PROMPT = "You are a helpful AI assistant. Answer questions directly.";
 
     /**
-     * Anthropic API 客户端.
-     * fromEnv() 会自动从环境变量读取 ANTHROPIC_API_KEY 并配置认证.
-     * 底层使用 OkHttp 发送 HTTP 请求.
+     * 通过 Clients.create() 构建, 从 Config (支持 .env 文件、环境变量、JVM 系统属性)
+     * 读取 ANTHROPIC_API_KEY 和 ANTHROPIC_BASE_URL.
      */
-    static final AnthropicClient client = AnthropicOkHttpClient.builder()
-            .fromEnv()
-            .build();
+    static final AnthropicClient client = Clients.create();
     // endregion
 
     // region Core: Agent Loop

@@ -45,11 +45,11 @@ package com.claw0.sessions;
 
 // region Common Imports
 import com.claw0.common.AnsiColors;
+import com.claw0.common.Clients;
 import com.claw0.common.Config;
 import com.claw0.common.JsonUtils;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
@@ -99,10 +99,8 @@ public class S03Sessions {
     /** 上下文安全阈值 (估算的 token 数), 超过此值触发 ContextGuard 保护机制 */
     static final int CONTEXT_SAFE_LIMIT = 180_000;
 
-    /** Anthropic API 客户端, 自动从环境变量读取 ANTHROPIC_API_KEY */
-    static final AnthropicClient client = AnthropicOkHttpClient.builder()
-            .fromEnv()
-            .build();
+    /** Anthropic API 客户端, 通过 Config 读取 API Key 和 Base URL */
+    static final AnthropicClient client = Clients.create();
     // endregion
 
     // ================================================================

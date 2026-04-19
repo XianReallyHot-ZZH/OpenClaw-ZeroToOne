@@ -39,11 +39,11 @@ package com.claw0.sessions;
 
 // region Common Imports
 import com.claw0.common.AnsiColors;
+import com.claw0.common.Clients;
 import com.claw0.common.Config;
 import com.claw0.common.JsonUtils;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
@@ -142,10 +142,8 @@ public class S06Intelligence {
             "HEARTBEAT.md", "BOOTSTRAP.md", "AGENTS.md", "MEMORY.md"
     );
 
-    /** Anthropic API 客户端, 从环境变量自动读取 API Key */
-    static final AnthropicClient client = AnthropicOkHttpClient.builder()
-            .fromEnv()
-            .build();
+    /** Anthropic API 客户端, 通过 Config 读取 API Key 和 Base URL */
+    static final AnthropicClient client = Clients.create();
 
     // ================================================================
     // region S01-S05 Core (从前序 Session 复制的核心代码)

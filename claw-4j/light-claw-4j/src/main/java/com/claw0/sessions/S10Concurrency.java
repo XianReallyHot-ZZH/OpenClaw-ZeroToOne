@@ -37,10 +37,10 @@ package com.claw0.sessions;
 // region Common Imports
 import com.claw0.common.AnsiColors;
 import com.claw0.common.Config;
+import com.claw0.common.Clients;
 import com.claw0.common.JsonUtils;
 
 import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
@@ -98,9 +98,7 @@ public class S10Concurrency {
     static final int CRON_AUTO_DISABLE_THRESHOLD = 5;
 
     /** Anthropic API 客户端 */
-    static final AnthropicClient client = AnthropicOkHttpClient.builder()
-            .fromEnv()
-            .build();
+    static final AnthropicClient client = Clients.create();
 
     /** 默认系统提示词 */
     static final String SYSTEM_PROMPT =
