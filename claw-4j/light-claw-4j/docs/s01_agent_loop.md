@@ -108,7 +108,88 @@ mvn compile exec:java -Dexec.mainClass="com.claw0.sessions.S01AgentLoop"
 | `exit` | 退出程序 |
 | `Ctrl+C` | 强制退出 |
 
-## 6. 学习要点
+## 6. 使用案例
+
+### 案例 1: 基本问答
+
+```
+============================================================
+  claw0  |  Section 01: Agent Loop
+  Model: claude-sonnet-4-20250514
+  Type 'quit' or 'exit' to leave. Ctrl+C also works.
+============================================================
+
+You > 什么是 Agent?
+
+Assistant: Agent 的核心就是一个循环 (while True):
+1. 接收输入
+2. 调用 LLM API
+3. 根据 stop_reason 决定下一步动作
+
+当 stop_reason 为 "end_turn" 时, 表示模型已完成回答。
+
+You > 谢谢, 退出
+Goodbye.
+```
+
+### 案例 2: 多轮对话 (上下文记忆)
+
+Agent 通过 `messages` 列表携带完整历史, 模型能看到之前所有对话:
+
+```
+You > 我叫小明
+
+Assistant: 你好小明！有什么可以帮你的吗？
+
+You > 我叫什么名字?
+
+Assistant: 你叫小明。
+
+You > quit
+Goodbye.
+```
+
+> 第二轮问答中, 模型能回答"我叫什么名字"是因为 `messages` 列表保留了第一轮的对话历史。
+> 每次 API 调用都携带从开始到现在的全部消息, 这就是 LLM "无状态" 特性的体现。
+
+### 案例 3: API 错误处理
+
+当 API 调用失败时 (如网络超时、Key 无效), Agent 会回滚历史并继续循环:
+
+```
+You > 讲个笑话
+
+API Error: 403: {error={type=forbidden, message=Request not allowed}}
+
+You > 检查一下 .env 配置是否正确...
+```
+
+> 错误发生时, 刚追加的用户消息会被移除 (`messages.remove`), 避免历史中出现
+> 孤立的 user 消息导致后续 API 调用因角色交替规则失败。
+
+### 案例 4: 使用第三方 Anthropic 兼容 API
+
+在 `.env` 中配置 `ANTHROPIC_BASE_URL` 即可接入兼容接口:
+
+```bash
+# .env
+ANTHROPIC_API_KEY=your-third-party-key
+ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic
+MODEL_ID=glm-5.1
+```
+
+```
+============================================================
+  claw0  |  Section 01: Agent Loop
+  Model: glm-5.1
+  Type 'quit' or 'exit' to leave. Ctrl+C also works.
+============================================================
+
+You > 你好
+Assistant: 你好！我是你的 AI 助手，有什么可以帮你的吗？
+```
+
+## 7. 学习要点
 
 1. **Agent 核心就是循环 + stop_reason 分发**：不管后续加多少功能，这个骨架不变。理解了这一点，就理解了所有 Agent 框架的本质。
 2. **Anthropic Java SDK 使用 Builder 模式**：`MessageCreateParams.builder()...build()` 是标准用法，所有参数都通过 builder 链式调用设置。
