@@ -138,10 +138,8 @@ You > 看看 pom.xml 里用了什么版本的 Java
 
   [tool: read_file] pom.xml
 Assistant: pom.xml 中配置的 Java 版本是 21:
-```xml
-<java.version>21</java.version>
-```
-同时还使用了 Anthropic SDK 2.18.0 和 Jackson 2.19.0。
+  <java.version>21</java.version>
+  同时还使用了 Anthropic SDK 2.18.0 和 Jackson 2.19.0。
 ```
 
 ### 案例 3: 写入文件 (write_file)
@@ -150,14 +148,11 @@ Assistant: pom.xml 中配置的 Java 版本是 21:
 You > 帮我创建一个 hello.sh 脚本, 输出 Hello World
 
   [tool: write_file] hello.sh
-Assistant: 已创建 hello.sh:
+Assistant: 已创建 hello.sh, 内容如下:
+  #!/bin/bash
+  echo "Hello World"
 
-```bash
-#!/bin/bash
-echo "Hello World"
-```
-
-你可以用 `bash hello.sh` 运行它。
+  你可以用 `bash hello.sh` 运行它。
 ```
 
 ### 案例 4: 编辑文件 (edit_file) — 先读后改
