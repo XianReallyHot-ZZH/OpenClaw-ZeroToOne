@@ -84,6 +84,7 @@ import java.util.Optional;
 import java.util.Scanner;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -100,7 +101,7 @@ public class S05GatewayRouting {
     //   VALID_ID 正则确保 agent ID 格式统一, 避免文件系统路径注入等问题.
 
     /** 模型 ID: 默认使用 Claude Sonnet, 通过环境变量 MODEL_ID 可覆盖 */
-    static final String MODEL_ID = Config.get("MODEL_ID", "claude-sonnet-4-20250514");
+    static final String MODEL_ID = Config.get("MODEL_ID", "glm-5.1");
 
     /** 工具输出最大长度: 截断过长的工具返回值, 防止 LLM 上下文溢出 */
     static final int MAX_TOOL_OUTPUT = 30_000;
@@ -540,6 +541,11 @@ public class S05GatewayRouting {
      */
     static String runAgent(AgentManager mgr, String agentId, String sessionKey,
                           String userText) {
+        return runAgent(mgr, agentId, sessionKey, userText, null);
+    }
+
+    static String runAgent(AgentManager mgr, String agentId, String sessionKey,
+                          String userText, BiConsumer<String, Boolean> onTyping) {
         AgentConfig agent = mgr.getAgent(agentId);
         if (agent == null) return "Error: agent '" + agentId + "' not found";
 
@@ -554,8 +560,10 @@ public class S05GatewayRouting {
         }
 
         try {
+            if (onTyping != null) onTyping.accept(agentId, true);
             return agentLoop(agent.effectiveModel(), agent.systemPrompt(), messages);
         } finally {
+            if (onTyping != null) onTyping.accept(agentId, false);
             agentSemaphore.release();
         }
     }
@@ -680,6 +688,16 @@ public class S05GatewayRouting {
                     + getPort() + AnsiColors.RESET);
         }
 
+        /** 向所有 WebSocket 客户端广播 typing 状态通知. */
+        void broadcastTyping(String agentId, boolean typing) {
+            String msg = JsonUtils.toJson(Map.of(
+                    "jsonrpc", "2.0", "method", "typing",
+                    "params", Map.of("agent_id", agentId, "typing", typing)));
+            for (WebSocket conn : getConnections()) {
+                try { conn.send(msg); } catch (Exception e) { /* ignore */ }
+            }
+        }
+
         /**
          * 处理 WebSocket 消息: 解析 JSON-RPC 2.0 请求, 分发给对应方法处理器.
          * [错误处理] 任何异常都转化为 JSON-RPC 错误响应, 确保客户端总能收到回复.
@@ -688,7 +706,15 @@ public class S05GatewayRouting {
         public void onMessage(WebSocket conn, String message) {
             Object id = null;
             try {
-                Map<String, Object> req = JsonUtils.toMap(message);
+                Map<String, Object> req;
+                try {
+                    req = JsonUtils.toMap(message);
+                } catch (Exception e) {
+                    conn.send(JsonUtils.toJson(Map.of("jsonrpc", "2.0",
+                            "error", Map.of("code", -32700, "message", "Parse error"),
+                            "id", null)));
+                    return;
+                }
                 id = req.get("id");
                 String method = (String) req.getOrDefault("method", "");
                 @SuppressWarnings("unchecked")
@@ -739,7 +765,7 @@ public class S05GatewayRouting {
                 sessionKey = route[1];
             }
 
-            String reply = runAgent(mgr, agentId, sessionKey, text);
+            String reply = runAgent(mgr, agentId, sessionKey, text, this::broadcastTyping);
             return Map.of("agent_id", agentId, "session_key", sessionKey, "reply", reply);
         }
 
@@ -771,7 +797,8 @@ public class S05GatewayRouting {
             return mgr.listAgents().stream()
                     .map(a -> Map.<String, Object>of(
                             "id", a.id(), "name", a.name(),
-                            "model", a.effectiveModel(), "dm_scope", a.dmScope()))
+                            "model", a.effectiveModel(), "dm_scope", a.dmScope(),
+                            "personality", a.personality() != null ? a.personality() : ""))
                     .toList();
         }
 
