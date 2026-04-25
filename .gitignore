@@ -31,3 +31,5 @@ desktop.ini
 *.log
 
 .claude/
+
+workspace/
