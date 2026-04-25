@@ -124,7 +124,7 @@ public class S07HeartbeatCron {
                     // 这是可接受的降级 -- 没有 SOUL.md 的 agent 只是缺少个性化, 仍然可用
                 }
             }
-            return "";
+            return "You are a helpful AI assistant.";
         }
 
         String buildSystemPrompt(String extra) {
@@ -570,7 +570,7 @@ public class S07HeartbeatCron {
 
         // Cron 表达式解析器 (5 字段标准格式: 分 时 日 月 周)
         private static final CronParser CRON_PARSER = new CronParser(
-                CronDefinitionBuilder.instanceDefinitionFor(CronType.CRON4J));
+                CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX));
 
         CronService(Path cronFile) {
             this.cronFile = cronFile;
@@ -627,10 +627,18 @@ public class S07HeartbeatCron {
         double computeNext(CronJob job, double now) {
             switch (job.scheduleKind) {
                 case "at" -> {
-                    // 一次性: 解析 ISO 时间戳
+                    // 一次性: 解析 ISO 时间戳 (兼容带/不带时区后缀的格式)
                     try {
                         String atStr = (String) job.scheduleConfig.getOrDefault("at", "");
-                        double ts = Instant.parse(atStr).getEpochSecond();
+                        double ts;
+                        try {
+                            // 先尝试完整 ISO 格式 (如 2026-04-25T14:00:00Z 或 +08:00)
+                            ts = Instant.parse(atStr).getEpochSecond();
+                        } catch (Exception e1) {
+                            // 回退: 无时区的本地时间, 视为 UTC (如 2026-04-25T14:00:00)
+                            ts = LocalDateTime.parse(atStr, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                                    .toEpochSecond(ZoneOffset.UTC);
+                        }
                         return ts > now ? ts : 0.0;
                     } catch (Exception e) {
                         return 0.0;
