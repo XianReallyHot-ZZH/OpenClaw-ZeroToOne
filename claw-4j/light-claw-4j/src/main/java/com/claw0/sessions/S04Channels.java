@@ -316,6 +316,29 @@ public class S04Channels {
         private int offset;
         private final Set<Integer> seen = ConcurrentHashMap.newKeySet();
 
+        // -- Buffer types --
+        record TextBufKey(String peerId, String senderId) {}
+
+        static class MediaGroupBuf {
+            long ts;
+            final List<Map<String, Object>> msgs = new ArrayList<>();
+            final List<Map<String, Object>> updates = new ArrayList<>();
+            MediaGroupBuf() { this.ts = System.currentTimeMillis(); }
+        }
+
+        static class TextBuf {
+            String text;
+            InboundMessage msg;
+            long ts;
+            TextBuf(String text, InboundMessage msg) {
+                this.text = text; this.msg = msg; this.ts = System.currentTimeMillis();
+            }
+        }
+
+        // -- Buffer storage --
+        private final ConcurrentHashMap<TextBufKey, TextBuf> textBuf = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, MediaGroupBuf> mediaGroups = new ConcurrentHashMap<>();
+
         /**
          * 构造 Telegram 渠道实例.
          *
@@ -378,10 +401,10 @@ public class S04Channels {
         @SuppressWarnings("unchecked")
         List<InboundMessage> poll() {
             var result = apiCall("getUpdates",
-                    Map.of("offset", offset, "timeout", 30));
-            if (!(result instanceof List<?> list)) return new ArrayList<>();
+                    Map.of("offset", offset, "timeout", 30,
+                            "allowed_updates", List.of("message")));
+            if (!(result instanceof List<?> list)) return flushAll();
 
-            List<InboundMessage> messages = new ArrayList<>();
             for (Object item : list) {
                 if (!(item instanceof Map<?, ?> updateRaw)) continue;
                 Map<String, Object> update = (Map<String, Object>) updateRaw;
@@ -390,17 +413,114 @@ public class S04Channels {
                     offset = uid + 1;
                     saveOffset(offsetPath, offset);
                 }
-                if (!seen.add(uid)) continue;  // 去重: 同一条消息可能被 getUpdates 返回多次
-                if (seen.size() > 5000) seen.clear();  // 防止内存泄漏: 超过 5000 条清空去重集合
+                if (!seen.add(uid)) continue;
+                if (seen.size() > 5000) seen.clear();
 
                 Map<String, Object> msg = (Map<String, Object>) update.get("message");
                 if (msg == null) continue;
+                // 媒体组: 同一 media_group_id 的消息缓冲 500ms 后合并
+                if (msg.get("media_group_id") != null) {
+                    bufMedia(msg, update);
+                    continue;
+                }
                 InboundMessage inbound = parseMessage(msg, update);
                 if (inbound == null) continue;
                 if (!allowedChats.isEmpty() && !allowedChats.contains(inbound.peerId())) continue;
-                messages.add(inbound);
+                bufText(inbound);
             }
-            return messages;
+            return flushAll();
+        }
+
+        // -- 媒体组缓冲 (500ms 窗口) --
+
+        void bufMedia(Map<String, Object> msg, Map<String, Object> update) {
+            String mgid = String.valueOf(msg.get("media_group_id"));
+            MediaGroupBuf buf = mediaGroups.computeIfAbsent(mgid, k -> new MediaGroupBuf());
+            buf.msgs.add(msg);
+            buf.updates.add(update);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<InboundMessage> flushMedia() {
+            long now = System.currentTimeMillis();
+            List<InboundMessage> ready = new ArrayList<>();
+            List<String> expired = mediaGroups.entrySet().stream()
+                    .filter(e -> now - e.getValue().ts >= 500)
+                    .map(Map.Entry::getKey).toList();
+            for (String mgid : expired) {
+                MediaGroupBuf buf = mediaGroups.remove(mgid);
+                if (buf == null || buf.msgs.isEmpty()) continue;
+                List<String> captions = new ArrayList<>();
+                List<Map<String, Object>> mediaItems = new ArrayList<>();
+                for (Map<String, Object> m : buf.msgs) {
+                    String caption = (String) m.getOrDefault("caption", "");
+                    if (!caption.isEmpty()) captions.add(caption);
+                    for (String mt : List.of("photo", "video", "document", "audio")) {
+                        Object raw = m.get(mt);
+                        if (raw == null) continue;
+                        String fid = "";
+                        if (raw instanceof List<?> rl && !rl.isEmpty()) {
+                            Object last = rl.get(rl.size() - 1);
+                            if (last instanceof Map<?, ?> lm) {
+                                Object v = lm.get("file_id");
+                                fid = v != null ? String.valueOf(v) : "";
+                            }
+                        } else if (raw instanceof Map<?, ?> rm) {
+                            Object v = rm.get("file_id");
+                            fid = v != null ? String.valueOf(v) : "";
+                        }
+                        if (!fid.isEmpty())
+                            mediaItems.add(Map.of("type", mt, "file_id", fid));
+                    }
+                }
+                InboundMessage first = parseMessage(buf.msgs.get(0), buf.updates.get(0));
+                if (first == null) continue;
+                String text = captions.isEmpty() ? "[media group]" : String.join("\n", captions);
+                InboundMessage merged = new InboundMessage(text, first.senderId(), first.channel(),
+                        first.accountId(), first.peerId(), first.isGroup(), mediaItems, first.raw());
+                if (allowedChats.isEmpty() || allowedChats.contains(merged.peerId()))
+                    ready.add(merged);
+            }
+            return ready;
+        }
+
+        // -- 文本合并缓冲 (1s 窗口) --
+        // Telegram 会将长粘贴拆分成多个片段; 缓冲后在 1s 静默后发出.
+
+        void bufText(InboundMessage inbound) {
+            TextBufKey key = new TextBufKey(inbound.peerId(), inbound.senderId());
+            long now = System.currentTimeMillis();
+            textBuf.compute(key, (k, existing) -> {
+                if (existing != null) {
+                    existing.text = existing.text + "\n" + inbound.text();
+                    existing.ts = now;
+                    return existing;
+                }
+                return new TextBuf(inbound.text(), inbound);
+            });
+        }
+
+        List<InboundMessage> flushText() {
+            long now = System.currentTimeMillis();
+            List<InboundMessage> ready = new ArrayList<>();
+            List<TextBufKey> expired = textBuf.entrySet().stream()
+                    .filter(e -> now - e.getValue().ts >= 1000)
+                    .map(Map.Entry::getKey).toList();
+            for (TextBufKey key : expired) {
+                TextBuf buf = textBuf.remove(key);
+                if (buf == null) continue;
+                InboundMessage merged = new InboundMessage(buf.text, buf.msg.senderId(),
+                        buf.msg.channel(), buf.msg.accountId(), buf.msg.peerId(),
+                        buf.msg.isGroup(), buf.msg.media(), buf.msg.raw());
+                ready.add(merged);
+            }
+            return ready;
+        }
+
+        List<InboundMessage> flushAll() {
+            List<InboundMessage> ready = flushMedia();
+            ready.addAll(flushText());
+            return ready;
         }
 
         @SuppressWarnings("unchecked")
@@ -415,7 +535,17 @@ public class S04Channels {
             if (text == null || text.isBlank()) return null;
 
             boolean isGroup = "group".equals(chatType) || "supergroup".equals(chatType);
-            String peerId = "private".equals(chatType) ? userId : chatId;
+            boolean isForum = Boolean.TRUE.equals(chat.get("is_forum"));
+            Object threadId = msg.get("message_thread_id");
+
+            String peerId;
+            if ("private".equals(chatType)) {
+                peerId = userId;
+            } else if (isGroup && isForum && threadId != null) {
+                peerId = chatId + ":topic:" + threadId;
+            } else {
+                peerId = chatId;
+            }
 
             return new InboundMessage(text, userId, "telegram",
                     accountId, peerId, isGroup, List.of(), rawUpdate);
@@ -492,6 +622,7 @@ public class S04Channels {
         private final String appId;
         private final String appSecret;
         private final String botOpenId;
+        private final String encryptKey;
         private final String apiBase;
         private final HttpClient http;
         private volatile String tenantToken = "";
@@ -503,6 +634,7 @@ public class S04Channels {
             this.appId = (String) cfg.getOrDefault("app_id", "");
             this.appSecret = (String) cfg.getOrDefault("app_secret", "");
             this.botOpenId = (String) cfg.getOrDefault("bot_open_id", "");
+            this.encryptKey = (String) cfg.getOrDefault("encrypt_key", "");
             boolean isLark = "true".equals(String.valueOf(cfg.getOrDefault("is_lark", "false")));
             this.apiBase = isLark ? "https://open.larksuite.com/open-apis"
                     : "https://open.feishu.cn/open-apis";
@@ -551,22 +683,69 @@ public class S04Channels {
             }
         }
 
-        /** Parse Feishu event callback. */
+        /** Parse Feishu event callback. 支持富文本、图片、@机器人检测和 token 校验. */
         @SuppressWarnings("unchecked")
-        Optional<InboundMessage> parseEvent(Map<String, Object> payload) {
-            if (payload.containsKey("challenge")) return Optional.empty();
+        Optional<InboundMessage> parseEvent(Map<String, Object> payload, String token) {
+            if (!encryptKey.isEmpty() && token != null && !token.isEmpty() && !encryptKey.equals(token)) {
+                System.out.println("  " + AnsiColors.RED + "[feishu] Token verification failed" + AnsiColors.RESET);
+                return Optional.empty();
+            }
+            if (payload.containsKey("challenge")) {
+                AnsiColors.printInfo("[feishu] Challenge: " + payload.get("challenge"));
+                return Optional.empty();
+            }
+
             Map<String, Object> event = (Map<String, Object>) payload.getOrDefault("event", Map.of());
             Map<String, Object> message = (Map<String, Object>) event.getOrDefault("message", Map.of());
-            Map<String, Object> sender = (Map<String, Object>)
+            Map<String, Object> senderId = (Map<String, Object>)
                     ((Map<String, Object>) event.getOrDefault("sender", Map.of()))
                             .getOrDefault("sender_id", Map.of());
-            String userId = (String) sender.getOrDefault("open_id",
-                    sender.getOrDefault("user_id", ""));
+            String userId = (String) senderId.getOrDefault("open_id",
+                    senderId.getOrDefault("user_id", ""));
             String chatId = (String) message.getOrDefault("chat_id", "");
             String chatType = (String) message.getOrDefault("chat_type", "");
             boolean isGroup = "group".equals(chatType);
 
-            // Parse content
+            // 群聊中只响应 @机器人的消息
+            if (isGroup && !botOpenId.isEmpty() && !botMentioned(event)) return Optional.empty();
+
+            ParsedContent parsed = parseContent(message);
+            if (parsed.text().isEmpty()) return Optional.empty();
+
+            String peerId = "p2p".equals(chatType) ? userId : chatId;
+            return Optional.of(new InboundMessage(parsed.text(), userId, "feishu",
+                    accountId, peerId, isGroup, parsed.media(), payload));
+        }
+
+        /** 无 token 校验的重载. */
+        Optional<InboundMessage> parseEvent(Map<String, Object> payload) {
+            return parseEvent(payload, "");
+        }
+
+        /** 检查群聊消息中是否 @了机器人. */
+        @SuppressWarnings("unchecked")
+        boolean botMentioned(Map<String, Object> event) {
+            Map<String, Object> message = (Map<String, Object>) event.getOrDefault("message", Map.of());
+            List<Map<String, Object>> mentions =
+                    (List<Map<String, Object>>) message.getOrDefault("mentions", List.of());
+            for (Map<String, Object> m : mentions) {
+                Object idObj = m.get("id");
+                if (idObj instanceof Map<?, ?> mid) {
+                    Object v = mid.get("open_id");
+                    if (botOpenId.equals(v != null ? String.valueOf(v) : "")) return true;
+                }
+                if (idObj instanceof String ids && ids.equals(botOpenId)) return true;
+                if (botOpenId.equals(m.get("key"))) return true;
+            }
+            return false;
+        }
+
+        /** 飞书消息内容解析结果. */
+        record ParsedContent(String text, List<Map<String, Object>> media) {}
+
+        /** 解析飞书消息内容: 支持纯文本、富文本 (post)、图片 (image). */
+        @SuppressWarnings("unchecked")
+        ParsedContent parseContent(Map<String, Object> message) {
             String msgType = (String) message.getOrDefault("msg_type", "text");
             Object rawContent = message.getOrDefault("content", "{}");
             Map<String, Object> content;
@@ -574,17 +753,48 @@ public class S04Channels {
                 content = rawContent instanceof String s
                         ? com.claw0.common.JsonUtils.toMap(s)
                         : (Map<String, Object>) rawContent;
-            } catch (Exception e) { return Optional.empty(); }
+            } catch (Exception e) { return new ParsedContent("", List.of()); }
 
-            String text = "";
+            List<Map<String, Object>> media = new ArrayList<>();
             if ("text".equals(msgType)) {
-                text = (String) content.getOrDefault("text", "");
+                return new ParsedContent((String) content.getOrDefault("text", ""), media);
             }
-            if (text.isEmpty()) return Optional.empty();
-
-            String peerId = "p2p".equals(chatType) ? userId : chatId;
-            return Optional.of(new InboundMessage(text, userId, "feishu",
-                    accountId, peerId, isGroup, List.of(), payload));
+            if ("post".equals(msgType)) {
+                List<String> texts = new ArrayList<>();
+                for (Object lcObj : content.values()) {
+                    if (!(lcObj instanceof Map<?, ?> lc)) continue;
+                    Object titleVal = lc.get("title");
+                    if (titleVal != null && !titleVal.toString().isEmpty())
+                        texts.add(titleVal.toString());
+                    Object contentVal = lc.get("content");
+                    if (!(contentVal instanceof List<?> paragraphs)) continue;
+                    for (Object paraObj : paragraphs) {
+                        if (!(paraObj instanceof List<?> para)) continue;
+                        for (Object nodeObj : para) {
+                            if (!(nodeObj instanceof Map<?, ?> node)) continue;
+                            Object tagVal = node.get("tag");
+                            if (tagVal == null) continue;
+                            String tag = tagVal.toString();
+                            if ("text".equals(tag)) {
+                                Object textVal = node.get("text");
+                                if (textVal != null) texts.add(textVal.toString());
+                            } else if ("a".equals(tag)) {
+                                Object textVal = node.get("text");
+                                Object hrefVal = node.get("href");
+                                texts.add((textVal != null ? textVal.toString() : "") + " "
+                                        + (hrefVal != null ? hrefVal.toString() : ""));
+                            }
+                        }
+                    }
+                }
+                return new ParsedContent(String.join("\n", texts), media);
+            }
+            if ("image".equals(msgType)) {
+                String key = (String) content.getOrDefault("image_key", "");
+                if (!key.isEmpty()) media.add(Map.of("type", "image", "key", key));
+                return new ParsedContent("[image]", media);
+            }
+            return new ParsedContent("", List.of());
         }
 
         @Override public String name() { return "feishu"; }
