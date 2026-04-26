@@ -70,6 +70,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
 public class S08Delivery {
@@ -78,7 +79,7 @@ public class S08Delivery {
     // 配置常量
     // ================================================================
 
-    static final String MODEL_ID = Config.get("MODEL_ID", "claude-sonnet-4-20250514");
+    static final String MODEL_ID = Config.get("MODEL_ID", "glm-5.1");
     static final Path WORKDIR = Path.of(System.getProperty("user.dir"));
     static final Path WORKSPACE_DIR = WORKDIR.resolve("workspace");
     static final Path QUEUE_DIR = WORKSPACE_DIR.resolve("delivery-queue");
@@ -497,7 +498,7 @@ public class S08Delivery {
      */
     static class DeliveryRunner {
         private final DeliveryQueue queue;
-        private final MockDeliveryChannel channel;
+        private final TriConsumer<String, String, String> deliverFn;
         private ScheduledExecutorService scheduler;
 
         // 统计计数
@@ -505,9 +506,18 @@ public class S08Delivery {
         final AtomicInteger totalSucceeded = new AtomicInteger();
         final AtomicInteger totalFailed = new AtomicInteger();
 
-        DeliveryRunner(DeliveryQueue queue, MockDeliveryChannel channel) {
+        /**
+         * 三参数 Consumer: (channel, to, text) -> void.
+         * 与 Python 的 deliver_fn: Callable[[str, str, str], None] 对齐.
+         */
+        @FunctionalInterface
+        interface TriConsumer<A, B, C> {
+            void accept(A a, B b, C c);
+        }
+
+        DeliveryRunner(DeliveryQueue queue, TriConsumer<String, String, String> deliverFn) {
             this.queue = queue;
-            this.channel = channel;
+            this.deliverFn = deliverFn;
         }
 
         /** 启动: 恢复扫描 + 后台线程 */
@@ -518,7 +528,16 @@ public class S08Delivery {
                 t.setDaemon(true);
                 return t;
             });
-            scheduler.scheduleWithFixedDelay(this::processPending, 1, 1, TimeUnit.SECONDS);
+            scheduler.scheduleWithFixedDelay(() -> {
+                try {
+                    processPending();
+                } catch (Exception e) {
+                    // 防止未捕获异常导致 ScheduledExecutorService 静默停止后续调度.
+                    // Python 的 _background_loop 在 while 中捕获所有异常并继续循环,
+                    // Java 的 scheduleWithFixedDelay 遇到未捕获异常会终止调度.
+                    printWarn("Delivery loop error: " + e.getMessage());
+                }
+            }, 1, 1, TimeUnit.SECONDS);
         }
 
         /** 启动时统计待处理和失败条目 */
@@ -545,7 +564,7 @@ public class S08Delivery {
 
                 totalAttempted.incrementAndGet();
                 try {
-                    channel.send(entry.to(), entry.text());
+                    deliverFn.accept(entry.channel(), entry.to(), entry.text());
                     queue.ack(entry.id());
                     totalSucceeded.incrementAndGet();
                 } catch (Exception e) {
@@ -606,6 +625,7 @@ public class S08Delivery {
         private final String to;
         private final double intervalSeconds;
         private ScheduledExecutorService scheduler;
+        private final Object laneLock = new Object();
         private volatile boolean enabled = false;
         volatile int runCount = 0;
         volatile double lastRun = 0.0;
@@ -624,14 +644,19 @@ public class S08Delivery {
                 t.setDaemon(true);
                 return t;
             });
-            scheduler.scheduleWithFixedDelay(this::tick,
-                    (long) intervalSeconds, (long) intervalSeconds, TimeUnit.SECONDS);
+            scheduler.scheduleWithFixedDelay(() -> {
+                try {
+                    tick();
+                } catch (Exception e) { /* prevent scheduler from silently stopping */ }
+            }, (long) intervalSeconds, (long) intervalSeconds, TimeUnit.SECONDS);
         }
 
         void tick() {
             if (!enabled) return;
-            runCount++;
-            lastRun = epochSeconds();
+            synchronized (laneLock) {
+                runCount++;
+                lastRun = epochSeconds();
+            }
             String heartbeatText = "[Heartbeat #" + runCount + "] "
                     + "System check at " + Instant.now().toString().replace("T", " ").substring(0, 19)
                     + " -- all OK.";
@@ -885,7 +910,8 @@ public class S08Delivery {
         String defaultTo = "user";
 
         DeliveryQueue queue = new DeliveryQueue();
-        DeliveryRunner runner = new DeliveryRunner(queue, mockChannel);
+        DeliveryRunner runner = new DeliveryRunner(queue,
+                (ch, to, text) -> mockChannel.send(to, text));
         runner.start();
 
         // 心跳
