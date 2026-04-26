@@ -2,7 +2,7 @@
 
 From Zero to One: Build an AI Agent Gateway (Java Edition)
 
-light-claw-4j 是 [claw0](https://github.com/anthropics/claw0) 项目的 Java 轻量级重写. 通过 10 个渐进式 Session, 从零构建一个完整的 AI Agent 网关.
+light-claw-4j 是 [claw0](https://github.com/shareAI-lab/claw0) 项目的 Java 轻量级重写. 通过 10 个渐进式 Session, 从零构建一个完整的 AI Agent 网关.
 
 每个 Session 是一个自包含的 Java 文件, 复制前序 Session 的核心代码并添加新功能, 可以独立编译和运行.
 
@@ -65,16 +65,16 @@ mvn compile exec:java -Dexec.mainClass=com.claw0.sessions.S10Concurrency
 
 | Session | 主题 | 核心概念 | 代码行数 |
 |---------|------|---------|---------|
-| S01 | Agent Loop | while True + stop_reason 分发 | ~200 |
-| S02 | Tool Use | JSON Schema + handler 分发表 | ~350 |
-| S03 | Sessions | JSONL 追加/重放 + 3 阶段上下文保护 | ~450 |
-| S04 | Channels | 统一渠道抽象 (CLI/Telegram/飞书) | ~500 |
-| S05 | Gateway & Routing | 5 层路由绑定表 + WebSocket 网关 | ~700 |
-| S06 | Intelligence | 8 层系统提示词 + 混合记忆检索 | ~1600 |
-| S07 | Heartbeat & Cron | 心跳运行器 + Cron 定时任务 | ~1100 |
-| S08 | Delivery | 磁盘持久化投递队列 + 指数退避 | ~1000 |
-| S09 | Resilience | 三层重试洋葱 (认证轮换/溢出恢复/工具循环) | ~950 |
-| S10 | Concurrency | 命名 Lane 并发 + generation 取消 | ~1500 |
+| S01 | Agent Loop | while True + stop_reason 分发 | ~194 |
+| S02 | Tool Use | JSON Schema + handler 分发表 | ~536 |
+| S03 | Sessions | JSONL 追加/重放 + 3 阶段上下文保护 | ~1081 |
+| S04 | Channels | 统一渠道抽象 (CLI/Telegram/飞书) | ~1230 |
+| S05 | Gateway & Routing | 5 层路由绑定表 + WebSocket 网关 | ~1064 |
+| S06 | Intelligence | 8 层系统提示词 + 混合记忆检索 | ~1649 |
+| S07 | Heartbeat & Cron | 心跳运行器 + Cron 定时任务 | ~1165 |
+| S08 | Delivery | 磁盘持久化投递队列 + 指数退避 | ~1082 |
+| S09 | Resilience | 三层重试洋葱 (认证轮换/溢出恢复/工具循环) | ~1059 |
+| S10 | Concurrency | 命名 Lane 并发 + generation 取消 | ~1538 |
 
 ## 项目结构
 
@@ -107,6 +107,7 @@ light-claw-4j/
 └── src/main/java/com/claw0/
     ├── common/                      # 公共工具类
     │   ├── AnsiColors.java          # ANSI 颜色输出
+    │   ├── Clients.java             # API 客户端工厂
     │   ├── Config.java              # .env 配置加载
     │   └── JsonUtils.java           # Jackson JSON 工具
     └── sessions/                    # 10 个 Session 实现
