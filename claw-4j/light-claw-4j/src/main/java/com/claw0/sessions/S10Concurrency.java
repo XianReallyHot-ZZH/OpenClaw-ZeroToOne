@@ -90,7 +90,7 @@ public class S10Concurrency {
     // 配置常量
     // ================================================================
 
-    static final String MODEL_ID = Config.get("MODEL_ID", "claude-sonnet-4-20250514");
+    static final String MODEL_ID = Config.get("MODEL_ID", "glm-5.1");
     static final Path WORKDIR = Path.of(System.getProperty("user.dir"));
     static final Path WORKSPACE_DIR = WORKDIR.resolve("workspace");
 
