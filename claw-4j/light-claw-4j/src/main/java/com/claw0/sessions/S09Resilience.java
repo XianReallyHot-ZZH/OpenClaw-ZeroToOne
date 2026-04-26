@@ -79,7 +79,7 @@ public class S09Resilience {
     // 配置常量
     // ================================================================
 
-    static final String MODEL_ID = Config.get("MODEL_ID", "claude-sonnet-4-20250514");
+    static final String MODEL_ID = Config.get("MODEL_ID", "glm-5.1");
     static final int MAX_TOOL_OUTPUT = 50_000;
     static final Path WORKDIR = Path.of(System.getProperty("user.dir"));
 
@@ -229,6 +229,14 @@ public class S09Resilience {
             return null;
         }
 
+        /** 返回所有冷却已过期的配置列表 */
+        List<AuthProfile> selectAllAvailable() {
+            double now = epochSeconds();
+            return profiles.stream()
+                    .filter(p -> now >= p.cooldownUntil)
+                    .collect(Collectors.toList());
+        }
+
         /** 在失败后将配置置入冷却 */
         void markFailure(AuthProfile profile, FailoverReason reason, double cooldownSeconds) {
             profile.cooldownUntil = epochSeconds() + cooldownSeconds;
@@ -336,20 +344,78 @@ public class S09Resilience {
         }
 
         /**
+         * 估算消息列表的总 token 数, 支持所有内容块类型.
+         * 遍历每条消息, 根据 content 类型 (字符串或块列表) 分别估算:
+         *   text 块 -> 直接估算
+         *   tool_result 块 -> 估算 content 字段
+         *   tool_use 块 -> 估算 input 的 JSON 字符串
+         */
+        int estimateMessagesTokens(List<MessageParam> messages) {
+            int total = 0;
+            for (MessageParam msg : messages) {
+                var content = msg.content();
+                if (content.isString()) {
+                    total += estimateTokens(content.asString());
+                } else if (content.isBlockParams()) {
+                    for (ContentBlockParam block : content.asBlockParams()) {
+                        if (block.isText()) {
+                            total += estimateTokens(block.asText().text());
+                        } else if (block.isToolResult()) {
+                            total += estimateTokens(block.asToolResult().content()
+                                    .flatMap(c -> c.string()).orElse(""));
+                        } else if (block.isToolUse()) {
+                            total += estimateTokens(block.asToolUse().input().toString());
+                        }
+                    }
+                }
+            }
+            return total;
+        }
+
+        /**
          * 截断过大的 tool_result 块以减少上下文占用.
-         *
-         * 简化实现: 当前直接保留原消息, 未做实际截断.
-         * 完整实现需要解析 MessageParam 内容 (可能是 TextBlock 或 ToolResultBlockParam),
-         * 重建每个 MessageParam 并截断过大的 tool_result 内容.
-         * 当前版本保留占位, 因为主要的溢出保护由 compactHistory() 承担,
-         * truncateToolResults 只是补充手段.
+         * 遍历消息内容块, 找到 tool_result 类型且超过 maxChars 的块进行截断.
          */
         List<MessageParam> truncateToolResults(List<MessageParam> messages) {
             int maxChars = (int) (maxTokens * 4 * 0.3);
             List<MessageParam> result = new ArrayList<>();
             for (MessageParam msg : messages) {
-                // MessageParam 内容是不可变的, 简化处理: 直接保留原消息
-                result.add(msg);
+                var content = msg.content();
+                if (!content.isBlockParams()) {
+                    result.add(msg);
+                    continue;
+                }
+                List<ContentBlockParam> blocks = content.asBlockParams();
+                List<ContentBlockParam> newBlocks = new ArrayList<>();
+                boolean changed = false;
+                for (ContentBlockParam block : blocks) {
+                    if (block.isToolResult()) {
+                        var tr = block.asToolResult();
+                        String rc = tr.content().flatMap(c -> c.string()).orElse("");
+                        if (rc.length() > maxChars) {
+                            changed = true;
+                            newBlocks.add(ContentBlockParam.ofToolResult(
+                                    ToolResultBlockParam.builder()
+                                            .toolUseId(tr.toolUseId())
+                                            .content(rc.substring(0, maxChars)
+                                                    + "\n\n[... truncated (" + rc.length()
+                                                    + " chars total, showing first " + maxChars + ") ...]")
+                                            .build()));
+                        } else {
+                            newBlocks.add(block);
+                        }
+                    } else {
+                        newBlocks.add(block);
+                    }
+                }
+                if (changed) {
+                    result.add(MessageParam.builder()
+                            .role(msg.role())
+                            .contentOfBlockParams(newBlocks)
+                            .build());
+                } else {
+                    result.add(msg);
+                }
             }
             return result;
         }
@@ -370,20 +436,37 @@ public class S09Resilience {
             List<MessageParam> oldMessages = messages.subList(0, compressCount);
             List<MessageParam> recentMessages = messages.subList(compressCount, total);
 
-            // 将旧消息展平为纯文本
-            StringBuilder sb = new StringBuilder();
+            // 将旧消息展平为纯文本, 按块类型分别提取
+            List<String> parts = new ArrayList<>();
             for (MessageParam msg : oldMessages) {
                 String role = msg.role().toString().toLowerCase();
-                // 提取文本内容 (简化: 只取 content 的字符串表示)
-                sb.append("[").append(role).append("]: ");
-                sb.append(msg.content().toString());
-                sb.append("\n");
+                var content = msg.content();
+                if (content.isString()) {
+                    parts.add("[" + role + "]: " + content.asString());
+                } else if (content.isBlockParams()) {
+                    for (ContentBlockParam block : content.asBlockParams()) {
+                        if (block.isText()) {
+                            parts.add("[" + role + "]: " + block.asText().text());
+                        } else if (block.isToolUse()) {
+                            parts.add("[" + role + " called " + block.asToolUse().name() + "]: "
+                                    + block.asToolUse().input().toString());
+                        } else if (block.isToolResult()) {
+                            String rc = block.asToolResult().content()
+                                    .flatMap(c -> c.string()).orElse("");
+                            String preview = rc.length() > 500 ? rc.substring(0, 500) + "..." : rc;
+                            parts.add("[tool_result]: " + preview);
+                        } else {
+                            parts.add("[" + role + "]: " + block.toString());
+                        }
+                    }
+                }
             }
+            String oldText = String.join("\n", parts);
 
             String summaryPrompt = "Summarize the following conversation concisely, "
                     + "preserving key facts and decisions. "
                     + "Output only the summary, no preamble.\n\n"
-                    + sb;
+                    + oldText;
 
             try {
                 Message summaryResp = apiClient.messages().create(MessageCreateParams.builder()
@@ -612,6 +695,9 @@ public class S09Resilience {
                                 totalCompactions++;
                                 printResilience("Context overflow (attempt " + (compactAttempt + 1)
                                         + "/" + MAX_OVERFLOW_COMPACTION + "), compacting...");
+                                // Stage 1: truncate oversized tool_result blocks
+                                layer2Messages = guard.truncateToolResults(layer2Messages);
+                                // Stage 2: compact history via LLM summary
                                 layer2Messages = guard.compactHistory(layer2Messages, apiClient, modelId);
                                 continue;
                             } else {
@@ -895,7 +981,7 @@ public class S09Resilience {
         SimulatedFailure sim = new SimulatedFailure();
         ContextGuard guard = new ContextGuard();
 
-        List<String> fallbackModels = List.of("claude-haiku-4-20250514");
+        List<String> fallbackModels = List.of("glm-5.1");
 
         ResilienceRunner runner = new ResilienceRunner(pm, MODEL_ID, fallbackModels, guard, sim);
 
